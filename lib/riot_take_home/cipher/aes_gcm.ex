@@ -21,20 +21,32 @@ defmodule RiotTakeHome.Cipher.AesGcm do
 
   @impl true
   def encrypt(plaintext) do
+    # Only reached when this cipher is the configured one, so a missing key is
+    # an operator error and failing loudly is right.
+    key =
+      case fetch_key() do
+        {:ok, key} -> key
+        :error -> raise "AES-256-GCM is the active cipher but ENCRYPTION_KEY is not set"
+      end
+
     nonce = :crypto.strong_rand_bytes(@nonce_size)
 
     {ciphertext, tag} =
-      :crypto.crypto_one_time_aead(:aes_256_gcm, key(), nonce, plaintext, "", true)
+      :crypto.crypto_one_time_aead(:aes_256_gcm, key, nonce, plaintext, "", true)
 
     Base.url_encode64(nonce <> tag <> ciphertext, padding: false)
   end
 
   @impl true
   def decrypt(data) do
-    with {:ok, <<nonce::binary-size(@nonce_size), tag::binary-size(@tag_size), rest::binary>>} <-
+    # Reached for any request-supplied `enc:aesgcm:` marker, so it must never
+    # raise: an unconfigured key is just another reason this value cannot be
+    # decrypted, and the caller leaves it untouched.
+    with {:ok, key} <- fetch_key(),
+         {:ok, <<nonce::binary-size(@nonce_size), tag::binary-size(@tag_size), rest::binary>>} <-
            Base.url_decode64(data, padding: false),
          plaintext when is_binary(plaintext) <-
-           :crypto.crypto_one_time_aead(:aes_256_gcm, key(), nonce, rest, "", tag, false) do
+           :crypto.crypto_one_time_aead(:aes_256_gcm, key, nonce, rest, "", tag, false) do
       {:ok, plaintext}
     else
       _ -> :error
@@ -42,18 +54,19 @@ defmodule RiotTakeHome.Cipher.AesGcm do
   end
 
   @kdf_salt "riot_take_home/aes-256-gcm/v1"
+  @kdf_iterations 600_000
 
-  defp key do
+  # PBKDF2-HMAC-SHA256 (RFC 8018), 32-byte key. The iteration count follows the
+  # current OWASP floor rather than relying on the secret being high-entropy,
+  # and the salt gives domain separation from any other key derived from it.
+  @spec fetch_key() :: {:ok, binary()} | :error
+  defp fetch_key do
     case Application.fetch_env(:riot_take_home, :encryption_secret) do
       {:ok, secret} when is_binary(secret) and secret != "" ->
-        # PBKDF2-HMAC-SHA256 (RFC 8018), 1000 iterations, 32-byte key. The input
-        # is a high-entropy secret, not a password, so the iteration count is not
-        # the security parameter here; the salt gives domain separation from any
-        # other key derived from the same secret.
-        :crypto.pbkdf2_hmac(:sha256, secret, @kdf_salt, 1000, 32)
+        {:ok, :crypto.pbkdf2_hmac(:sha256, secret, @kdf_salt, @kdf_iterations, 32)}
 
       _ ->
-        raise "AES-256-GCM is the active cipher but ENCRYPTION_KEY is not set"
+        :error
     end
   end
 end

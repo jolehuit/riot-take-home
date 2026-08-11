@@ -4,7 +4,7 @@
 ![Elixir](https://img.shields.io/badge/Elixir-1.19.5-4B275F?style=flat-square&logo=elixir&logoColor=white)
 ![OTP](https://img.shields.io/badge/OTP-28-A2003B?style=flat-square)
 ![Server](https://img.shields.io/badge/server-Bandit-0B7261?style=flat-square)
-![Tests](https://img.shields.io/badge/tests-47%20passing-3FB950?style=flat-square)
+![Tests](https://img.shields.io/badge/tests-49%20passing-3FB950?style=flat-square)
 
 A small HTTP API with four POST endpoints over JSON: `/encrypt`, `/decrypt`, `/sign`, `/verify`. Elixir with Plug and Bandit, no framework, no database, two runtime dependencies (Plug and Bandit), about 330 lines of lib code.
 
@@ -54,11 +54,11 @@ curl -i -X POST localhost:4000/verify -H "content-type: application/json" \
 
 **Marker:** `enc:<alg_id>:<data>`, e.g. `enc:b64:MzA`. The algorithm id travels with the value, so two ids (`b64`, `aesgcm`) coexist in one body with no migration.
 
-**Status codes:** 200 / 204 as above; 400 on malformed JSON, empty body, non-object root, or a bad `/verify` shape; 413 over 1 MiB; 415 on a non-JSON content-type; 404 on an unknown route or wrong method. Errors are `{"error": "<message>"}`. No 500 is reachable from any input: parser errors are caught and answered without a request body ever reaching the logs.
+**Status codes:** 200 / 204 as above; 400 on malformed JSON, empty body, non-object root, or a bad `/verify` shape; 413 over 1 MiB; 415 on a non-JSON content-type; 404 on an unknown route or wrong method. Errors are `{"error": "<message>"}`. No 500 is reachable from any input, including a marker naming a cipher the server cannot key: decryption of untrusted data never raises, it reports failure and the value passes through. Parser errors are caught without a request body ever reaching the logs.
 
 ## Design decisions
 
-Built minimum-first: the four endpoints over a single base64 cipher and one HMAC signer came first; the marker, the exact number handling, the second cipher and the second signer are layers added on top, each defended below. Every claim here maps to a named test.
+The design is layered so the core stands alone: the four endpoints over a single base64 cipher and one HMAC signer are the whole of the assignment, and the marker, the exact number handling, the second cipher and the second signer sit on top of that core, each defended below. Every claim here maps to a named test.
 
 **Marker prefix, not a decode heuristic.** The obvious `/decrypt` rule, "if it decodes as base64 it was encrypted", is not usable: `"Riot"` decodes to valid UTF-8, `"MzA="` decodes to `"30"` which is valid JSON, a real GitHub node id decodes cleanly. The assignment's own plaintext examples, `"John Doe"` and `"1998-11-19"`, are invalid base64 only by a space and a hyphen, so a heuristic tuned to the example passes the example and corrupts real data. Every ciphertext therefore carries `enc:<alg_id>:`, and detection is an exact check. The cost, assumed: `/decrypt` only reverses what this service produced, so a hand-made bare-base64 string is left unchanged rather than guessed at.
 
@@ -84,7 +84,7 @@ Built minimum-first: the four endpoints over a single base64 cipher and one HMAC
 mix test
 ```
 
-47 tests, 4 of them properties. Expected values (markers, signatures, canonical strings) were computed outside the code under test, so a test cannot inherit a bug from it.
+49 tests, 4 of them properties. Expected values (markers, signatures, canonical strings) were computed outside the code under test, so a test cannot inherit a bug from it.
 
 | File | What it proves |
 |---|---|

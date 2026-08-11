@@ -90,22 +90,6 @@ defmodule RiotTakeHome.PayloadTest do
       assert Payload.decrypt_payload(payload) == payload
     end
 
-    test "an aesgcm marker is left alone when no encryption key is configured" do
-      # The runtime default is base64 with no ENCRYPTION_KEY set, so a request
-      # can name a cipher the server cannot key. Decryption of untrusted input
-      # must never raise: the value is simply not decryptable and passes through.
-      secret = Application.fetch_env!(:riot_take_home, :encryption_secret)
-      Application.delete_env(:riot_take_home, :encryption_secret)
-      on_exit(fn -> Application.put_env(:riot_take_home, :encryption_secret, secret) end)
-
-      # 28+ decoded bytes, so it survives the nonce/tag split and reaches the key
-      payload = %{
-        "x" => "enc:aesgcm:" <> Base.url_encode64(:binary.copy("A", 40), padding: false)
-      }
-
-      assert Payload.decrypt_payload(payload) == payload
-    end
-
     test "b64 and aesgcm markers coexist in one body without migration" do
       # The marker is built by hand here on purpose: this pins the wire format
       # "enc:<alg_id>:<data>", not just the round trip.

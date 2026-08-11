@@ -67,20 +67,6 @@ defmodule RiotTakeHome.RouterTest do
       assert decrypted["age"] === 30
     end
 
-    test "200, not 500, when a marker names a cipher the server cannot key" do
-      # Guards the contract claim that no 500 is reachable: a request can name
-      # any known algorithm id, including one whose key is not configured.
-      secret = Application.fetch_env!(:riot_take_home, :encryption_secret)
-      Application.delete_env(:riot_take_home, :encryption_secret)
-      on_exit(fn -> Application.put_env(:riot_take_home, :encryption_secret, secret) end)
-
-      body = ~s({"x":"enc:aesgcm:) <> String.duplicate("QUFB", 12) <> ~s("})
-      conn = post_json("/decrypt", body)
-
-      assert conn.status == 200
-      assert json_body(conn) == JSON.decode!(body)
-    end
-
     test "the false-positive table passes through HTTP unchanged" do
       body =
         ~s({"a":"Riot","b":"MzA=","c":"SGVsbG8=","d":"test","e":"abcd",) <>

@@ -41,10 +41,11 @@ defmodule RiotTakeHome.Cipher.AesGcm do
   def decrypt(data) do
     # Reached for any request-supplied `enc:aesgcm:` marker, so it must never
     # raise: an unconfigured key is just another reason this value cannot be
-    # decrypted, and the caller leaves it untouched.
-    with {:ok, key} <- fetch_key(),
-         {:ok, <<nonce::binary-size(@nonce_size), tag::binary-size(@tag_size), rest::binary>>} <-
+    # decrypted, and the caller leaves it untouched. The cheap structural check
+    # comes first so a malformed marker is rejected before any key handling.
+    with {:ok, <<nonce::binary-size(@nonce_size), tag::binary-size(@tag_size), rest::binary>>} <-
            Base.url_decode64(data, padding: false),
+         {:ok, key} <- fetch_key(),
          plaintext when is_binary(plaintext) <-
            :crypto.crypto_one_time_aead(:aes_256_gcm, key, nonce, rest, "", tag, false) do
       {:ok, plaintext}
@@ -56,17 +57,44 @@ defmodule RiotTakeHome.Cipher.AesGcm do
   @kdf_salt "riot_take_home/aes-256-gcm/v1"
   @kdf_iterations 600_000
 
-  # PBKDF2-HMAC-SHA256 (RFC 8018), 32-byte key. The iteration count follows the
-  # current OWASP floor rather than relying on the secret being high-entropy,
-  # and the salt gives domain separation from any other key derived from it.
   @spec fetch_key() :: {:ok, binary()} | :error
   defp fetch_key do
     case Application.fetch_env(:riot_take_home, :encryption_secret) do
       {:ok, secret} when is_binary(secret) and secret != "" ->
-        {:ok, :crypto.pbkdf2_hmac(:sha256, secret, @kdf_salt, @kdf_iterations, 32)}
+        {:ok, derive_once(secret)}
 
       _ ->
         :error
+    end
+  end
+
+  # PBKDF2-HMAC-SHA256 (RFC 8018), 32-byte key. The iteration count follows the
+  # current OWASP floor rather than relying on the secret being high-entropy,
+  # and the salt gives domain separation from any other key derived from it.
+  #
+  # That count is deliberately expensive (~70 ms), while the key is a pure
+  # function of the secret and a constant salt. Deriving it inside encrypt/1 and
+  # decrypt/1 would charge that cost per property of every request, which turns
+  # untrusted input into CPU amplification: one body of marked values would cost
+  # the request count times 70 ms before any of it is even decoded. It is
+  # therefore derived on first use and kept in `:persistent_term`, which exists
+  # for terms written once and read constantly.
+  #
+  # The entry is keyed by a fingerprint of the secret rather than the secret, so
+  # rotating it re-derives instead of silently decrypting with a stale key, and
+  # the secret itself is never copied into a second global store.
+  @spec derive_once(binary()) :: binary()
+  defp derive_once(secret) do
+    fingerprint = :crypto.hash(:sha256, secret)
+
+    case :persistent_term.get(__MODULE__, nil) do
+      {^fingerprint, key} ->
+        key
+
+      _ ->
+        key = :crypto.pbkdf2_hmac(:sha256, secret, @kdf_salt, @kdf_iterations, 32)
+        :persistent_term.put(__MODULE__, {fingerprint, key})
+        key
     end
   end
 end

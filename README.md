@@ -4,9 +4,9 @@
 ![Elixir](https://img.shields.io/badge/Elixir-1.19.5-4B275F?style=flat-square&logo=elixir&logoColor=white)
 ![OTP](https://img.shields.io/badge/OTP-28-A2003B?style=flat-square)
 ![Server](https://img.shields.io/badge/server-Bandit-0B7261?style=flat-square)
-![Tests](https://img.shields.io/badge/tests-49%20passing-3FB950?style=flat-square)
+![Tests](https://img.shields.io/badge/tests-58%20passing-3FB950?style=flat-square)
 
-A small HTTP API with four POST endpoints over JSON: `/encrypt`, `/decrypt`, `/sign`, `/verify`. Elixir with Plug and Bandit, no framework, no database, two runtime dependencies (Plug and Bandit), about 330 lines of lib code.
+A small HTTP API with four POST endpoints over JSON: `/encrypt`, `/decrypt`, `/sign`, `/verify`. Elixir with Plug and Bandit, no framework, no database, two runtime dependencies (Plug and Bandit), about 355 lines of lib code.
 
 ## Run it
 
@@ -76,7 +76,9 @@ The design is layered so the core stands alone: the four endpoints over a single
 
 **Plug, not Phoenix.** A minimal Phoenix API project pulls 16 packages against 13 here, and adds a supervision tree with PubSub and DNSCluster plus a nine-plug endpoint (Static, Session, MethodOverride) that four stateless endpoints never touch. It also routes JSON back through Jason, where this uses the standard-library `JSON`. In exchange, body parsing and error handling are written by hand in `router.ex`, visible and covered by the router tests. Note that in an existing Phoenix codebase these four routes would be a scoped pipeline in the current router rather than a new app, so the scaffold skipped here is scaffold that would not have been written there either. Plug is the layer Phoenix itself is built on.
 
-**Two ciphers and two signers, not one of each.** The assignment asks for both algorithms to be swappable without touching the rest of the code, and a declared behaviour proves nothing where a second implementation proves it. `RiotTakeHome.Cipher` has base64 and AES-256-GCM; `RiotTakeHome.Signer` has HMAC-SHA256 and HMAC-SHA512. Each swap is one line of config and nothing else moves (tested). Base64 is the active default so every example here is reproducible byte for byte; AES-256-GCM takes a dedicated `ENCRYPTION_KEY`, kept separate from the signing secret because a value used to encrypt must not be the value used to sign, and derives its key with PBKDF2 (RFC 8018) via the OTP-native `:crypto.pbkdf2_hmac` rather than a bare hash.
+**Two ciphers and two signers, not one of each.** The assignment asks for both algorithms to be swappable without touching the rest of the code, and a declared behaviour proves nothing where a second implementation proves it. `RiotTakeHome.Cipher` has base64 and AES-256-GCM; `RiotTakeHome.Signer` has HMAC-SHA256 and HMAC-SHA512. Each swap is one line of config and nothing else moves, tested by flipping the config and driving the endpoints. Base64 is the active default so every example here is reproducible byte for byte; AES-256-GCM takes a dedicated `ENCRYPTION_KEY`, kept separate from the signing secret because a value used to encrypt must not be the value used to sign, and derives its key with PBKDF2 (RFC 8018) via the OTP-native `:crypto.pbkdf2_hmac` rather than a bare hash.
+
+**A slow KDF belongs at startup, not on the request path.** PBKDF2 at the OWASP floor costs about 70 ms per derivation, and the key is a pure function of the secret and a constant salt. Deriving it inside `encrypt/1` and `decrypt/1` charges that cost per property: a body of 200 marked values took 14.5 s, and since `/decrypt` accepts markers from anyone, that is CPU amplification on untrusted input rather than a slow endpoint. The key is derived on first use and held in `:persistent_term`, keyed on a fingerprint of the secret so a rotation re-derives instead of decrypting with a stale key. The same request now takes 0.09 s, and a test fails if the memo is removed.
 
 ## Tests
 
@@ -84,7 +86,7 @@ The design is layered so the core stands alone: the four endpoints over a single
 mix test
 ```
 
-49 tests, 4 of them properties. Expected values (markers, signatures, canonical strings) were computed outside the code under test, so a test cannot inherit a bug from it.
+58 tests, 4 of them properties. Expected values (markers, signatures, canonical strings) were computed outside the code under test, so a test cannot inherit a bug from it.
 
 | File | What it proves |
 |---|---|
@@ -92,6 +94,8 @@ mix test
 | `canonical_test.exs` | Key permutations at every depth share one form; array order is preserved; a 40-key case shows the explicit sort does real work above 32 keys; large integers are exact. |
 | `signature_test.exs` | Key order does not change the signature (anchored to an independent HMAC); the two integers one apart sign differently; `1` vs `1.0` differ, as a documented trade-off; verify rejects altered, wrong-size, non-string and nil signatures without crashing; the second signer works through the same behaviour and each rejects the other's signature on length. |
 | `router_test.exs` | The HTTP contract: exact `/sign` shape, 204 with zero bytes, permuted `data`, every 400 / 413 / 415 / 404 case, the 1 MiB limit, and a root with a literal `"_json"` key. |
+| `aes_gcm_vector_test.exs` | A ciphertext built outside Elixir (node, from the documented salt, iteration count and nonce size) decrypts here. Change the KDF, the salt, the iteration count, the nonce size or the variable the key is read from and the vector stops opening. |
+| `configuration_test.exs` | The swap seam end to end: flipping `:cipher` moves `/encrypt` to AES and `/decrypt` still reads values written by the previous one; flipping `:signer` moves `/sign` to SHA-512 and rejects SHA-256 signatures. Also: an absent key answers 200 rather than 500, a rotated secret re-derives, and 200 markers stay under a second. |
 | `property_test.exs` | Over generated JSON (integers beyond 2^53, arbitrary UTF-8): encrypt-then-decrypt is the identity, the canonical form is construction-order independent and valid JSON, and sign-then-verify always passes. |
 
 CI runs `mix format --check-formatted`, `mix compile --warnings-as-errors`, `mix credo --strict` and `mix test`, pinned to the versions in `.tool-versions`.

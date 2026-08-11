@@ -4,9 +4,9 @@
 ![Elixir](https://img.shields.io/badge/Elixir-1.19.5-4B275F?style=flat-square&logo=elixir&logoColor=white)
 ![OTP](https://img.shields.io/badge/OTP-28-A2003B?style=flat-square)
 ![Server](https://img.shields.io/badge/server-Bandit-0B7261?style=flat-square)
-![Tests](https://img.shields.io/badge/tests-58%20passing-3FB950?style=flat-square)
+![Tests](https://img.shields.io/badge/tests-61%20passing-3FB950?style=flat-square)
 
-A small HTTP API with four POST endpoints over JSON: `/encrypt`, `/decrypt`, `/sign`, `/verify`. Elixir with Plug and Bandit, no framework, no database, two runtime dependencies (Plug and Bandit), about 355 lines of lib code.
+A small HTTP API with four POST endpoints over JSON: `/encrypt`, `/decrypt`, `/sign`, `/verify`. Elixir with Plug and Bandit, no framework, no database, two runtime dependencies (Plug and Bandit), about 365 lines of lib code.
 
 ## Run it
 
@@ -54,7 +54,7 @@ curl -i -X POST localhost:4000/verify -H "content-type: application/json" \
 
 **Marker:** `enc:<alg_id>:<data>`, e.g. `enc:b64:MzA`. The algorithm id travels with the value, so two ids (`b64`, `aesgcm`) coexist in one body with no migration.
 
-**Status codes:** 200 / 204 as above; 400 on malformed JSON, empty body, non-object root, or a bad `/verify` shape; 413 over 1 MiB; 415 on a non-JSON content-type; 405 with an `Allow` header on a known route with another method; 404 on an unknown route. Errors are `{"error": "<message>"}`. No 500 is reachable from any input, including a marker naming a cipher the server cannot key: decryption of untrusted data never raises, it reports failure and the value passes through. Parser errors are caught without a request body ever reaching the logs.
+**Status codes:** 200 / 204 as above; 400 on malformed JSON, empty body, non-object root, or a bad `/verify` shape; 413 over 1 MiB; 400 on an integer past 1000 digits; 415 on a non-JSON content-type; 405 with an `Allow` header on a known route with another method; 404 on an unknown route. Errors are `{"error": "<message>"}`. No 500 is reachable from any input, including a marker naming a cipher the server cannot key: decryption of untrusted data never raises, it reports failure and the value passes through. Parser errors are caught without a request body ever reaching the logs.
 
 ## Design decisions
 
@@ -65,6 +65,8 @@ The design is layered so the core stands alone: the four endpoints over a single
 **Encrypt the JSON encoding of the value, not its string form.** `/encrypt` encrypts `JSON.encode!(value)`, so `30` encrypts as `30` and `"30"` as `"30"`; decrypt decodes then JSON-parses, and types return by construction while `"30"` stays distinct from `30`. Coercing to strings would lose types and break the round trip.
 
 **Numbers are preserved exactly, never normalised.** Normalising through a float collides: `12345678901234567890` and `…891` map to the same IEEE-754 double and would sign identically, which is a forgery primitive. Elixir integers are arbitrary-precision, so they are emitted exactly and the collision cannot happen (tested with that pair). The cost: `1` and `1.0` sign differently, which rubs against a strict reading of "value, not representation". A representation collision is an interoperability constraint; a value collision is a security defect. We keep the lesser one.
+
+Arbitrary precision needs a bound, though, and the body limit is not one. Converting a bignum back to decimal is quadratic in its length, so a single 1 MB integer literal cost 24 s of CPU where 1 MB of text costs 1 ms: 1 MiB of bytes bounds the input, not the work. Integers are therefore rejected past 1000 digits, which is roughly 3300 bits and far past any real value, and which caps a full-size body under 50 ms measured. Numbers under that stay exact, and the pair above still signs differently.
 
 **Explicit recursive key sort, and a deliberate deviation from RFC 8785.** The canonical form is close to JCS (RFC 8785) for structure, but deviates on numbers on purpose: JCS mandates ECMAScript double-based number formatting, which collapses integers beyond 2^53, the exact collision the previous decision avoids. The sort is also explicit rather than trusting Erlang map order, which above 32 keys derives from runtime hashing and is not stable across OTP versions.
 
@@ -86,14 +88,14 @@ The design is layered so the core stands alone: the four endpoints over a single
 mix test
 ```
 
-58 tests, 4 of them properties. Expected values (markers, signatures, canonical strings) were computed outside the code under test, so a test cannot inherit a bug from it.
+61 tests, 4 of them properties. Expected values (markers, signatures, canonical strings) were computed outside the code under test, so a test cannot inherit a bug from it.
 
 | File | What it proves |
 |---|---|
 | `payload_test.exs` | The example produces the documented markers; round trip restores types; `"30"` stays distinct from `30`; a table of 8 false-positive strings passes through `/decrypt` untouched; nested and malformed markers are left alone; base64 and AES-GCM coexist; AES-GCM is non-deterministic and rejects tampering. |
 | `canonical_test.exs` | Key permutations at every depth share one form; array order is preserved; a 40-key case shows the explicit sort does real work above 32 keys; large integers are exact. |
 | `signature_test.exs` | Key order does not change the signature (anchored to an independent HMAC); the two integers one apart sign differently; `1` vs `1.0` differ, as a documented trade-off; verify rejects altered, wrong-size, non-string and nil signatures without crashing; the second signer works through the same behaviour and each rejects the other's signature on length. |
-| `router_test.exs` | The HTTP contract: exact `/sign` shape, 204 with zero bytes, permuted `data`, every 400 / 413 / 415 / 404 case, the 1 MiB limit, and a root with a literal `"_json"` key. |
+| `router_test.exs` | The HTTP contract: exact `/sign` shape, 204 with zero bytes, permuted `data`, every 400 / 413 / 415 / 404 case, the 1 MiB limit, a root with a literal `"_json"` key, and the digit bound: rejected past 1000 digits on every endpoint, still exact just under it, and a body packed with maximum-size integers still fast. |
 | `aes_gcm_vector_test.exs` | A ciphertext built outside Elixir (node, from the documented salt, iteration count and nonce size) decrypts here. Change the KDF, the salt, the iteration count, the nonce size or the variable the key is read from and the vector stops opening. |
 | `configuration_test.exs` | The swap seam end to end: flipping `:cipher` moves `/encrypt` to AES and `/decrypt` still reads values written by the previous one; flipping `:signer` moves `/sign` to SHA-512 and rejects SHA-256 signatures. Also: an absent key answers 200 rather than 500, a rotated secret re-derives, and 200 markers stay under a second. |
 | `property_test.exs` | Over generated JSON (integers beyond 2^53, arbitrary UTF-8): encrypt-then-decrypt is the identity, the canonical form is construction-order independent and valid JSON, and sign-then-verify always passes. |

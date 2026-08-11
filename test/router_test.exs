@@ -183,6 +183,43 @@ defmodule RiotTakeHome.RouterTest do
       end
     end
 
+    test "400 on an integer past the digit bound, on every endpoint" do
+      huge = String.duplicate("9", 1001)
+
+      for path <- ["/encrypt", "/decrypt", "/sign"] do
+        conn = post_json(path, ~s({"n":#{huge}}))
+
+        assert conn.status == 400, "#{path} must bound the integer, got #{conn.status}"
+        assert json_body(conn) == %{"error" => "an integer exceeds 1000 digits"}
+      end
+
+      # nested and inside an array too, since the cost is the same wherever it sits
+      assert post_json("/sign", ~s({"a":{"b":[#{huge}]}})).status == 400
+    end
+
+    test "an integer just under the bound still signs, and exactly" do
+      # The bound exists to cap CPU, not to reintroduce the float collision the
+      # canonical form was built to avoid: 1000 digits stay exact.
+      big = String.duplicate("9", 1000)
+
+      assert post_json("/sign", ~s({"n":#{big}})).status == 200
+      # the two integers one apart still sign differently at this size
+      other = String.duplicate("9", 999) <> "8"
+      refute signature_for(~s({"n":#{big}})) == signature_for(~s({"n":#{other}}))
+    end
+
+    test "a full 1 MiB body of maximum-size integers stays fast" do
+      # Without the bound one 1 MB integer literal costs ~24 s. With it, the
+      # worst case is a body packed with 1000-digit integers.
+      number = String.duplicate("9", 1000)
+      many = Enum.map_join(1..1000, ",", fn i -> ~s("k#{i}":#{number}) end)
+
+      {micros, conn} = :timer.tc(fn -> post_json("/sign", "{" <> many <> "}") end)
+
+      assert conn.status == 200
+      assert micros < 2_000_000, "took #{div(micros, 1000)} ms, the digit bound is not holding"
+    end
+
     test "413 on a body above the explicit 1 MiB limit" do
       big = ~s({"big":") <> String.duplicate("a", 1_100_000) <> ~s("})
       conn = post_json("/encrypt", big)

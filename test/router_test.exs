@@ -244,10 +244,16 @@ defmodule RiotTakeHome.RouterTest do
       assert json_body(conn) == %{"error" => "not found"}
     end
 
-    test "404 on a known path with the wrong method" do
-      conn = :get |> conn("/encrypt") |> Router.call(@opts)
+    test "405 with an Allow header on a known path with the wrong method" do
+      # The path exists and only answers POST, so RFC 9110 asks for 405 plus
+      # Allow rather than pretending the route is unknown, all the more so
+      # because the four routes are documented.
+      for method <- [:get, :put, :delete, :patch], path <- ["/encrypt", "/sign"] do
+        conn = method |> conn(path) |> Router.call(@opts)
 
-      assert conn.status == 404
+        assert conn.status == 405, "#{method} #{path} must be 405, got #{conn.status}"
+        assert get_resp_header(conn, "allow") == ["POST"]
+      end
     end
 
     test "404 on an unknown route with a malformed body and no content-type" do

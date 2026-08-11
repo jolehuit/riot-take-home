@@ -54,7 +54,7 @@ curl -i -X POST localhost:4000/verify -H "content-type: application/json" \
 
 **Marker:** `enc:<alg_id>:<data>`, e.g. `enc:b64:MzA`. The algorithm id travels with the value, so two ids (`b64`, `aesgcm`) coexist in one body with no migration.
 
-**Status codes:** 200 / 204 as above; 400 on malformed JSON, empty body, non-object root, or a bad `/verify` shape; 413 over 1 MiB; 415 on a non-JSON content-type; 404 on an unknown route or wrong method. Errors are `{"error": "<message>"}`. No 500 is reachable from any input, including a marker naming a cipher the server cannot key: decryption of untrusted data never raises, it reports failure and the value passes through. Parser errors are caught without a request body ever reaching the logs.
+**Status codes:** 200 / 204 as above; 400 on malformed JSON, empty body, non-object root, or a bad `/verify` shape; 413 over 1 MiB; 415 on a non-JSON content-type; 405 with an `Allow` header on a known route with another method; 404 on an unknown route. Errors are `{"error": "<message>"}`. No 500 is reachable from any input, including a marker naming a cipher the server cannot key: decryption of untrusted data never raises, it reports failure and the value passes through. Parser errors are caught without a request body ever reaching the logs.
 
 ## Design decisions
 

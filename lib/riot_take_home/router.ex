@@ -52,6 +52,13 @@ defmodule RiotTakeHome.Router do
     end
   end
 
+  # The four routes exist and only answer POST, so any other method on them is
+  # a 405 with Allow, per RFC 9110, rather than pretending the path is unknown.
+  match "/encrypt", do: method_not_allowed(conn)
+  match "/decrypt", do: method_not_allowed(conn)
+  match "/sign", do: method_not_allowed(conn)
+  match "/verify", do: method_not_allowed(conn)
+
   match _ do
     error(conn, 404, "not found")
   end
@@ -93,6 +100,12 @@ defmodule RiotTakeHome.Router do
   defp fetch_object(_conn), do: :error
 
   defp object_required(conn), do: error(conn, 400, "request body must be a JSON object")
+
+  defp method_not_allowed(conn) do
+    conn
+    |> put_resp_header("allow", "POST")
+    |> error(405, "method not allowed, use POST")
+  end
 
   defp error(conn, status, message), do: send_json(conn, status, %{"error" => message})
 

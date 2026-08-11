@@ -54,7 +54,7 @@ curl -i -X POST localhost:4000/verify -H "content-type: application/json" \
 
 **Marker:** `enc:<alg_id>:<data>`, e.g. `enc:b64:MzA`. The algorithm id travels with the value, so two ids (`b64`, `aesgcm`) coexist in one body with no migration.
 
-**Status codes:** 200 / 204 as above; 400 on malformed JSON, empty body, non-object root, or a bad `/verify` shape; 413 over 1 MiB; 400 on an integer past 1000 digits; 415 on a non-JSON content-type; 405 with an `Allow` header on a known route with another method; 404 on an unknown route. Errors are `{"error": "<message>"}`. No 500 is reachable from any input, including a marker naming a cipher the server cannot key: decryption of untrusted data never raises, it reports failure and the value passes through. Parser errors are caught without a request body ever reaching the logs.
+**Status codes:** 200 / 204 as above; 400 on malformed JSON, an empty body, a non-object root, an integer past 1000 digits, or a bad `/verify` shape; 413 over 1 MiB; 415 on a non-JSON content-type; 405 with an `Allow` header on a known route with another method; 404 on an unknown route. Errors are `{"error": "<message>"}`. No 500 is reachable from any input, including a marker naming a cipher the server cannot key: decryption of untrusted data never raises, it reports failure and the value passes through. Parser errors are caught without a request body ever reaching the logs.
 
 ## Design decisions
 
@@ -88,14 +88,14 @@ Arbitrary precision needs a bound, though, and the body limit is not one. Conver
 mix test
 ```
 
-61 tests, 4 of them properties. Expected values (markers, signatures, canonical strings) were computed outside the code under test, so a test cannot inherit a bug from it.
+61 tests, 4 of them properties. Expected values (markers, signatures, canonical strings, one AES-GCM ciphertext) were computed outside the code under test, so a test cannot inherit a bug from it.
 
 | File | What it proves |
 |---|---|
 | `payload_test.exs` | The example produces the documented markers; round trip restores types; `"30"` stays distinct from `30`; a table of 8 false-positive strings passes through `/decrypt` untouched; nested and malformed markers are left alone; base64 and AES-GCM coexist; AES-GCM is non-deterministic and rejects tampering. |
 | `canonical_test.exs` | Key permutations at every depth share one form; array order is preserved; a 40-key case shows the explicit sort does real work above 32 keys; large integers are exact. |
 | `signature_test.exs` | Key order does not change the signature (anchored to an independent HMAC); the two integers one apart sign differently; `1` vs `1.0` differ, as a documented trade-off; verify rejects altered, wrong-size, non-string and nil signatures without crashing; the second signer works through the same behaviour and each rejects the other's signature on length. |
-| `router_test.exs` | The HTTP contract: exact `/sign` shape, 204 with zero bytes, permuted `data`, every 400 / 413 / 415 / 404 case, the 1 MiB limit, a root with a literal `"_json"` key, and the digit bound: rejected past 1000 digits on every endpoint, still exact just under it, and a body packed with maximum-size integers still fast. |
+| `router_test.exs` | The HTTP contract: exact `/sign` shape, 204 with zero bytes, permuted `data`, every 400 / 405 / 413 / 415 / 404 case including the `Allow` header, the 1 MiB limit, a root with a literal `"_json"` key, and the digit bound: rejected past 1000 digits on every endpoint, still exact just under it, and a body packed with maximum-size integers still fast. |
 | `aes_gcm_vector_test.exs` | A ciphertext built outside Elixir (node, from the documented salt, iteration count and nonce size) decrypts here. Change the KDF, the salt, the iteration count, the nonce size or the variable the key is read from and the vector stops opening. |
 | `configuration_test.exs` | The swap seam end to end: flipping `:cipher` moves `/encrypt` to AES and `/decrypt` still reads values written by the previous one; flipping `:signer` moves `/sign` to SHA-512 and rejects SHA-256 signatures. Also: an absent key answers 200 rather than 500, a rotated secret re-derives, and 200 markers stay under a second. |
 | `property_test.exs` | Over generated JSON (integers beyond 2^53, arbitrary UTF-8): encrypt-then-decrypt is the identity, the canonical form is construction-order independent and valid JSON, and sign-then-verify always passes. |
@@ -106,7 +106,7 @@ CI runs `mix format --check-formatted`, `mix compile --warnings-as-errors`, `mix
 
 | Left out | Why |
 |---|---|
-| Key rotation, KMS, multiple active secrets | Real webhook signing needs it; two environment variables are the honest scope here. |
+| KMS, and overlapping secrets during a rotation | Changing a secret re-derives correctly, but accepting the old and the new at once is what real webhook signing needs; two environment variables are the honest scope here. |
 | Authentication, rate limiting | The assignment defines an anonymous API. |
 | GenServer, supervision beyond the HTTP server | The service holds no state. |
 | Telemetry, healthcheck, API versioning | Nothing here would consume them; the marker already carries the only thing that evolves. |

@@ -1,0 +1,25 @@
+# Build artifacts and dependencies are fetched/compiled inside the image.
+_build/
+deps/
+cover/
+doc/
+tmp/
+*.beam
+*.ez
+erl_crash.dump
+
+# VCS, CI and editor files have no business in the build context.
+.git/
+.github/
+.gitignore
+.elixir_ls/
+.DS_Store
+
+# Docker files themselves.
+Dockerfile
+.dockerignore
+
+# Not needed to build the release.
+README.md
+test/
+.formatter.exs

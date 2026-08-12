@@ -29,8 +29,10 @@ COPY --from=build --chown=riot:riot /app/_build/prod/rel/riot_take_home ./
 USER riot
 ENV HOME=/app
 
-# A missing SIGNING_SECRET is a configuration error, not a VM fault: fail with
-# the message from config/runtime.exs instead of dumping the emulator state.
+# A missing SIGNING_SECRET is a configuration error, so the readable message
+# from config/runtime.exs is printed first; the emulator still reports its own
+# boot failure after it. This only stops the crash dump file, which would
+# otherwise be written on every misconfigured start.
 ENV ERL_CRASH_DUMP_SECONDS=0
 
 # The port is read at runtime from PORT (config/runtime.exs); 4000 is the default.

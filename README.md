@@ -74,7 +74,7 @@ The four endpoints over one base64 cipher and one HMAC signer are the whole of t
 
 Exactness needs a bound, and the body limit is not one: converting a bignum back to decimal is quadratic, so a single 1 MB integer literal cost 24 s of CPU where 1 MB of text costs 1 ms. Integers past 1000 digits are rejected, which caps a full-size body under 50 ms measured and leaves every realistic value exact (`router_test.exs`).
 
-**Explicit recursive key sort, deviating from RFC 8785 on numbers.** JCS mandates ECMAScript double formatting, which collapses integers beyond 2^53, the collision above. The sort is explicit rather than trusting Erlang map order, which above 32 keys derives from runtime hashing and is not stable across OTP versions (`canonical_test.exs`).
+**Explicit recursive key sort, deviating from RFC 8785 on numbers.** JCS mandates ECMAScript double formatting, which collapses integers beyond 2^53, the collision above. The sort is explicit rather than trusting Erlang map order, which above 32 keys derives from runtime hashing and is not stable across OTP versions (`canonical_test.exs`). Duplicate keys resolve first-wins, which is what the decoder hands over: the signature covers the decoded document, not the bytes that carried it, so a peer whose parser keeps the last value would canonicalise the same body differently.
 
 **`/sign` returns the signature alone,** as the assignment's example response shows. `/verify` accepts as `data` anything `/sign` accepts.
 

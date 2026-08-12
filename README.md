@@ -52,13 +52,15 @@ curl -i -X POST localhost:4000/verify -H "content-type: application/json" \
 | `POST /sign` | a JSON object | 200, exactly `{"signature": "<sig>"}`; HMAC-SHA256 over the canonical form, url-safe base64, no padding |
 | `POST /verify` | `{"signature": <string>, "data": <object>}` | 204 empty body if valid, 400 otherwise |
 
-**Marker:** `enc:<alg_id>:<data>`, e.g. `enc:b64:MzA`. The algorithm id travels with the value, so two ids (`b64`, `aesgcm`) coexist in one body with no migration.
+**Marker:** `enc:<alg_id>:<data>`, e.g. `enc:b64:MzA`. What follows the second colon is the base64 the assignment names; the prefix is metadata around it, not a different algorithm. Carrying the id with the value is what makes `/decrypt` detection an exact check rather than a guess at the bytes, and what lets two ids (`b64`, `aesgcm`) coexist in one body with no migration. Both are argued under Design decisions.
 
 **Status codes:** 200 / 204 as above; 400 on malformed JSON, an empty body, a non-object root, an integer past 1000 digits, or a bad `/verify` shape; 413 over 1 MiB; 415 on a non-JSON content-type; 405 with an `Allow` header on a known route with another method; 404 on an unknown route. Errors are `{"error": "<message>"}`. No 500 is reachable from any input, including a marker naming a cipher the server cannot key: decryption of untrusted data never raises, it reports failure and the value passes through. Parser errors are caught without a request body ever reaching the logs.
 
 ## Design decisions
 
-The design is layered so the core stands alone: the four endpoints over a single base64 cipher and one HMAC signer are the whole of the assignment, and the marker, the exact number handling, the second cipher and the second signer sit on top of that core, each defended below. Every claim here maps to a named test.
+The four endpoints over one base64 cipher and one HMAC signer are the whole of the assignment. Everything beyond that core — the marker, the exact number handling, the second cipher and the second signer — is defended below together with the cost it carries. Every claim here maps to a named test.
+
+### `/encrypt` and `/decrypt`
 
 **Marker prefix, not a decode heuristic.** `/decrypt` is asked for two things at once: detect encrypted strings and decrypt them, and leave values that were not encrypted unchanged. Base64 carries no mark of its own, so for an arbitrary string those two cannot both hold. Any rule that decides "this one is encrypted" from the bytes alone will sometimes decide it about plaintext: `"Riot"` decodes to valid UTF-8; `"MzA="` decodes to `"30"`, which is valid JSON, so a decode-then-parse rule silently turns that string into the number 30; a real GitHub node id decodes cleanly. The plaintext in the examples, `"John Doe"` and `"1998-11-19"`, is invalid base64 only by a space and a hyphen, so a heuristic tuned to them passes the examples and corrupts real data.
 
@@ -66,23 +68,31 @@ The tension is resolved by marking ciphertext instead of guessing at it. Every v
 
 **Encrypt the JSON encoding of the value, not its string form.** `/encrypt` encrypts `JSON.encode!(value)`, so `30` encrypts as `30` and `"30"` as `"30"`; decrypt decodes then JSON-parses, and types return by construction while `"30"` stays distinct from `30`. Coercing to strings would lose types and break the round trip.
 
+**Depth 1 on both sides.** A nested object becomes one string on encrypt, so `/decrypt` inspects depth 1 only and is the exact inverse: a marker-shaped string sitting deeper is user data and stays untouched. Recursive decryption was rejected because `/encrypt` can never produce a nested marker, so it could only corrupt plaintext.
+
+### `/sign` and `/verify`
+
 **Numbers are preserved exactly, never normalised.** Normalising through a float collides: `12345678901234567890` and `…891` map to the same IEEE-754 double and would sign identically, which is a forgery primitive. Elixir integers are arbitrary-precision, so they are emitted exactly and the collision cannot happen (tested with that pair). The cost: `1` and `1.0` sign differently, which rubs against a strict reading of "value, not representation". A representation collision is an interoperability constraint; a value collision is a security defect. We keep the lesser one.
 
 Arbitrary precision needs a bound, though, and the body limit is not one. Converting a bignum back to decimal is quadratic in its length, so a single 1 MB integer literal cost 24 s of CPU where 1 MB of text costs 1 ms: 1 MiB of bytes bounds the input, not the work. Integers are therefore rejected past 1000 digits, which is roughly 3300 bits and far past any real value, and which caps a full-size body under 50 ms measured. Numbers under that stay exact, and the pair above still signs differently.
 
 **Explicit recursive key sort, and a deliberate deviation from RFC 8785.** The canonical form is close to JCS (RFC 8785) for structure, but deviates on numbers on purpose: JCS mandates ECMAScript double-based number formatting, which collapses integers beyond 2^53, the exact collision the previous decision avoids. The sort is also explicit rather than trusting Erlang map order, which above 32 keys derives from runtime hashing and is not stable across OTP versions.
 
-**A JSON object is required.** `/encrypt` acts on "properties at depth 1" and `/sign` "adds a signature property", both of which presuppose an object. A top-level array, string or number gets a clean 400 rather than an invented behaviour.
-
 **`/sign` returns the signature alone.** The assignment's example response has exactly one key. Echoing the payload with a signature added was considered and rejected: the example is literal and the caller already holds the payload. `/verify` stays symmetric, accepting as `data` anything `/sign` accepts.
 
-**Depth 1 on both sides.** A nested object becomes one string on encrypt, so `/decrypt` inspects depth 1 only and is the exact inverse: a marker-shaped string sitting deeper is user data and stays untouched. Recursive decryption was rejected because `/encrypt` can never produce a nested marker, so it could only corrupt plaintext.
+### Swapping the algorithm
+
+**Two ciphers and two signers, not one of each.** The assignment asks for both algorithms to be swappable without touching the rest of the code, and a declared behaviour proves nothing where a second implementation proves it. `RiotTakeHome.Cipher` has base64 and AES-256-GCM; `RiotTakeHome.Signer` has HMAC-SHA256 and HMAC-SHA512. Each swap is one line of config and nothing else moves, tested by flipping the config and driving the endpoints. Base64 is the active default so every example here is reproducible byte for byte; AES-256-GCM takes a dedicated `ENCRYPTION_KEY`, kept separate from the signing secret because a value used to encrypt must not be the value used to sign, and derives its key rather than using the variable as one.
+
+**AES needs a key derivation; HMAC does not, and gets none.** AES-256-GCM takes exactly 32 bytes of key, while an environment variable is a string of arbitrary length and unknown quality, so deriving is required here rather than optional. The derivation is PBKDF2 (RFC 8018), through the OTP-native `:crypto.pbkdf2_hmac`. Its iteration count buys nothing if the operator supplies 32 random bytes, but it is the whole difference between a slow and an instant offline search if they supply a passphrase, and nothing in the service can tell which they did. HMAC has no such constraint: it accepts a key of any length, so `/sign` passes `SIGNING_SECRET` straight to `:crypto.mac/4` with no stretching anywhere on the signing path.
+
+**A slow KDF belongs at startup, not on the request path.** PBKDF2 at the OWASP floor costs about 70 ms per derivation, and the key is a pure function of the secret and a constant salt. Deriving it inside `encrypt/1` and `decrypt/1` charges that cost per property: a body of 200 marked values took 14.5 s, and since `/decrypt` accepts markers from anyone, that is CPU amplification on untrusted input rather than a slow endpoint. The key is derived on first use and held in `:persistent_term`, keyed on a fingerprint of the secret so a rotation re-derives instead of decrypting with a stale key. The same request now takes 0.09 s, and a test fails if the memo is removed.
+
+### Framework and request shape
 
 **Plug, not Phoenix.** A minimal Phoenix API project pulls 16 packages against 13 here, and adds a supervision tree with PubSub and DNSCluster plus a nine-plug endpoint (Static, Session, MethodOverride) that four stateless endpoints never touch. It also routes JSON back through Jason, where this uses the standard-library `JSON`. In exchange, body parsing and error handling are written by hand in `router.ex`, visible and covered by the router tests. Note that in an existing Phoenix codebase these four routes would be a scoped pipeline in the current router rather than a new app, so the scaffold skipped here is scaffold that would not have been written there either. Plug is the layer Phoenix itself is built on.
 
-**Two ciphers and two signers, not one of each.** The assignment asks for both algorithms to be swappable without touching the rest of the code, and a declared behaviour proves nothing where a second implementation proves it. `RiotTakeHome.Cipher` has base64 and AES-256-GCM; `RiotTakeHome.Signer` has HMAC-SHA256 and HMAC-SHA512. Each swap is one line of config and nothing else moves, tested by flipping the config and driving the endpoints. Base64 is the active default so every example here is reproducible byte for byte; AES-256-GCM takes a dedicated `ENCRYPTION_KEY`, kept separate from the signing secret because a value used to encrypt must not be the value used to sign, and derives its key with PBKDF2 (RFC 8018) via the OTP-native `:crypto.pbkdf2_hmac` rather than a bare hash.
-
-**A slow KDF belongs at startup, not on the request path.** PBKDF2 at the OWASP floor costs about 70 ms per derivation, and the key is a pure function of the secret and a constant salt. Deriving it inside `encrypt/1` and `decrypt/1` charges that cost per property: a body of 200 marked values took 14.5 s, and since `/decrypt` accepts markers from anyone, that is CPU amplification on untrusted input rather than a slow endpoint. The key is derived on first use and held in `:persistent_term`, keyed on a fingerprint of the secret so a rotation re-derives instead of decrypting with a stale key. The same request now takes 0.09 s, and a test fails if the memo is removed.
+**A JSON object is required.** `/encrypt` acts on "properties at depth 1" and `/sign` "adds a signature property", both of which presuppose an object. A top-level array, string or number gets a clean 400 rather than an invented behaviour.
 
 ## Tests
 

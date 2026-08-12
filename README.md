@@ -6,7 +6,7 @@
 ![Server](https://img.shields.io/badge/server-Bandit-0B7261?style=flat-square)
 ![Tests](https://img.shields.io/badge/tests-61%20passing-3FB950?style=flat-square)
 
-A small HTTP API with four POST endpoints over JSON: `/encrypt`, `/decrypt`, `/sign`, `/verify`. Elixir with Plug and Bandit, no framework, no database, two runtime dependencies (Plug and Bandit), about 365 lines of lib code.
+A small HTTP API with four POST endpoints over JSON: `/encrypt`, `/decrypt`, `/sign`, `/verify`. Elixir with Plug and Bandit, no framework, no database, two runtime dependencies, 490 lines in `lib/`, 363 of them code.
 
 ## Run it
 

@@ -79,8 +79,12 @@ defmodule RiotTakeHome.ConfigurationTest do
     end
   end
 
-  describe "an encryption key that is absent or rotated" do
+  describe "an encryption key that is absent" do
     setup do
+      previous = Application.fetch_env!(:riot_take_home, :encryption_key)
+      Application.delete_env(:riot_take_home, :encryption_key)
+      on_exit(fn -> Application.put_env(:riot_take_home, :encryption_key, previous) end)
+
       # 28+ decoded bytes, so the value survives the nonce/tag split and reaches
       # the key lookup, which is where the failure used to be raised.
       %{marker: "enc:aesgcm:" <> Base.url_encode64(:binary.copy("A", 40), padding: false)}
@@ -89,12 +93,6 @@ defmodule RiotTakeHome.ConfigurationTest do
     test "decrypt_payload/1 leaves an aesgcm marker alone when no key is configured", %{
       marker: marker
     } do
-      Application.delete_env(:riot_take_home, :encryption_secret)
-
-      on_exit(fn ->
-        Application.put_env(:riot_take_home, :encryption_secret, "test-only-encryption-secret")
-      end)
-
       payload = %{"x" => marker}
 
       assert Payload.decrypt_payload(payload) == payload
@@ -103,52 +101,10 @@ defmodule RiotTakeHome.ConfigurationTest do
     test "POST /decrypt answers 200, not 500, when a marker names a cipher it cannot key", %{
       marker: marker
     } do
-      Application.delete_env(:riot_take_home, :encryption_secret)
-
-      on_exit(fn ->
-        Application.put_env(:riot_take_home, :encryption_secret, "test-only-encryption-secret")
-      end)
-
       conn = post_json("/decrypt", JSON.encode!(%{"x" => marker}))
 
       assert conn.status == 200
       assert json_body(conn) == %{"x" => marker}
-    end
-
-    test "rotating the secret re-derives the key instead of reusing the cached one" do
-      # The derived key is memoised, so this is the test that the memo is keyed
-      # on the secret: under a new secret the old ciphertext must stop opening,
-      # and a fresh one must work.
-      swap(:cipher, RiotTakeHome.Cipher.AesGcm)
-      before = post_json("/encrypt", ~s({"age":30})) |> json_body()
-
-      swap(:encryption_secret, "a-different-encryption-secret")
-
-      # written under the old secret: unreadable now, and left untouched
-      assert post_json("/decrypt", JSON.encode!(before)) |> json_body() == before
-      # written under the new one: reads back
-      rewritten = post_json("/encrypt", ~s({"age":30})) |> json_body()
-      assert post_json("/decrypt", JSON.encode!(rewritten)) |> json_body() == %{"age" => 30}
-    end
-  end
-
-  describe "the derivation cost is paid once, not per value" do
-    test "a body of many markers costs about the same as a body of one" do
-      # A regression guard, not a benchmark. The derivation costs ~70 ms, so
-      # were it run per value this 200-marker body would take over ten seconds.
-      swap(:cipher, RiotTakeHome.Cipher.AesGcm)
-
-      # The data must decode and be long enough to pass the nonce/tag split, or
-      # it fails before the key is ever fetched and this measures nothing. It
-      # then fails on the GCM tag, which is the worst case: full key handling
-      # for a value that was never ours.
-      reaches_the_key = "enc:aesgcm:" <> Base.url_encode64(:binary.copy("A", 40), padding: false)
-      many = Map.new(1..200, fn i -> {"k#{i}", reaches_the_key} end)
-
-      {micros, _} = :timer.tc(fn -> Payload.decrypt_payload(many) end)
-
-      assert micros < 1_000_000,
-             "200 markers took #{div(micros, 1000)} ms, key derivation is not cached"
     end
   end
 end

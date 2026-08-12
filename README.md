@@ -4,9 +4,9 @@
 ![Elixir](https://img.shields.io/badge/Elixir-1.19.5-4B275F?style=flat-square&logo=elixir&logoColor=white)
 ![OTP](https://img.shields.io/badge/OTP-28-A2003B?style=flat-square)
 ![Server](https://img.shields.io/badge/server-Bandit-0B7261?style=flat-square)
-![Tests](https://img.shields.io/badge/tests-61%20passing-3FB950?style=flat-square)
+![Tests](https://img.shields.io/badge/tests-59%20passing-3FB950?style=flat-square)
 
-A small HTTP API with four POST endpoints over JSON: `/encrypt`, `/decrypt`, `/sign`, `/verify`. Elixir with Plug and Bandit, no framework, no database, two runtime dependencies, 490 lines in `lib/`, 363 of them code.
+A small HTTP API with four POST endpoints over JSON: `/encrypt`, `/decrypt`, `/sign`, `/verify`. Elixir with Plug and Bandit, no framework, no database, two runtime dependencies, 453 lines in `lib/`, 346 of them code.
 
 ## Run it
 
@@ -82,9 +82,7 @@ Exactness needs a bound, and the body limit is not one: converting a bignum back
 
 **Each behaviour has two implementations,** because a declared behaviour proves nothing where a second one proves it. `Cipher` has base64 and AES-256-GCM, `Signer` has HMAC-SHA256 and HMAC-SHA512. Each swap is one config line and nothing else moves, tested by flipping the config and driving the endpoints (`configuration_test.exs`). Base64 is the default, so every example above reproduces byte for byte.
 
-**Why the AES key is derived.** AES-256-GCM takes exactly 32 bytes of key; an environment variable is a string of arbitrary length and unknown quality, so deriving is required here rather than optional. The derivation is PBKDF2 (RFC 8018) through `:crypto.pbkdf2_hmac`: the iteration count buys nothing against 32 random bytes, but it is the whole difference against a passphrase, and the service cannot tell which the operator supplied. HMAC carries no such constraint and gets no stretching: `/sign` passes `SIGNING_SECRET` straight to `:crypto.mac/4`. `ENCRYPTION_KEY` is kept separate from the signing secret (`aes_gcm_vector_test.exs`).
-
-**The derivation runs once, at first use.** PBKDF2 at the OWASP floor costs about 70 ms, and the key is a pure function of the secret and a constant salt. Deriving it per value charged that cost per property: 200 marked values took 14.5 s, and since `/decrypt` accepts markers from anyone, that is CPU amplification on untrusted input. The key is held in `:persistent_term`, keyed on a fingerprint of the secret so a rotation re-derives. The same request now takes 0.09 s, and a test fails if the memo is removed.
+**The AES key is 32 raw bytes, checked at boot.** `ENCRYPTION_KEY` must be exactly 32 bytes, base64-encoded (`openssl rand -base64 32`); a malformed value refuses the boot with the same kind of message as a missing `SIGNING_SECRET`, and since base64 is the default cipher, absence is a normal start. The cipher is deliberately minimal: keyed and non-deterministic, the two properties that break any detection reading the bytes, and real deployment key management, derivation from passphrases and rotation included, is out of scope. The key stays separate from `SIGNING_SECRET`, since a value used to encrypt must not be the value used to sign (`aes_gcm_vector_test.exs`).
 
 ### Framework and request shape
 
@@ -98,7 +96,7 @@ Exactness needs a bound, and the body limit is not one: converting a bignum back
 mix test
 ```
 
-61 tests, 4 of them properties: over generated JSON, encrypt-then-decrypt is the identity and sign-then-verify always passes (`property_test.exs`). Every expected value (markers, signatures, canonical forms, one AES-GCM ciphertext) was computed outside the code under test, so a test cannot inherit a bug from it. Two are worth naming: a 40-key case, because Erlang sorts smaller maps for free and would otherwise make the explicit sort look correct by accident; and an AES-GCM vector generated under node, which pins the salt, the iteration count, the nonce size and the variable the key is read from, all at once.
+59 tests, 4 of them properties: over generated JSON, encrypt-then-decrypt is the identity and sign-then-verify always passes (`property_test.exs`). Every expected value (markers, signatures, canonical forms, one AES-GCM ciphertext) was computed outside the code under test, so a test cannot inherit a bug from it. Two are worth naming: a 40-key case, because Erlang sorts smaller maps for free and would otherwise make the explicit sort look correct by accident; and an AES-GCM vector generated under node, which pins the nonce size, the wire layout and the variable the key is read from, all at once.
 
 CI runs `mix format --check-formatted`, `mix compile --warnings-as-errors`, `mix credo --strict` and `mix test`, pinned to the versions in `.tool-versions`.
 
@@ -106,7 +104,7 @@ CI runs `mix format --check-formatted`, `mix compile --warnings-as-errors`, `mix
 
 | Left out | Why |
 |---|---|
-| KMS, and overlapping secrets during a rotation | Changing a secret re-derives correctly, but accepting the old and the new at once is what real webhook signing needs; two environment variables are the honest scope here. |
+| KMS, key derivation, rotation | The operator supplies 32 raw bytes and changing them is a restart; deriving keys from passphrases and accepting the old and the new at once belong to real deployment key management, and two environment variables are the honest scope here. |
 | Authentication, rate limiting | The assignment defines an anonymous API. |
 | GenServer, supervision beyond the HTTP server | The service holds no state. |
 | Telemetry, healthcheck, API versioning | Nothing here would consume them; the marker already carries the only thing that evolves. |

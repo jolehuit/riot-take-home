@@ -1,6 +1,6 @@
 # Riot Take Home
 
-[![CI](https://img.shields.io/github/actions/workflow/status/jolehuit/riot_take_home/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/jolehuit/riot_take_home/actions)
+[![CI](https://img.shields.io/github/actions/workflow/status/jolehuit/riot-take-home/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/jolehuit/riot-take-home/actions)
 ![Elixir](https://img.shields.io/badge/Elixir-1.19.5-4B275F?style=flat-square&logo=elixir&logoColor=white)
 ![OTP](https://img.shields.io/badge/OTP-28-A2003B?style=flat-square)
 ![Server](https://img.shields.io/badge/server-Bandit-0B7261?style=flat-square)

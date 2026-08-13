@@ -11,13 +11,12 @@ defmodule RiotTakeHome.PropertyTest do
   # and raw UTF-8 strings, not just printable ones.
   #
   # One accepted limit: a PLAINTEXT
-  # string that happens to be a well-formed marker of a known cipher (for
-  # example the literal string "enc:b64:MzA" sent to /decrypt) is
-  # indistinguishable from a ciphertext and will be decrypted. The
-  # encrypt-then-decrypt round trip below is still exact for such strings,
-  # since they are wrapped before being unwrapped, so the property holds
-  # universally; only a decrypt-is-identity-on-plaintext property would not,
-  # and none is claimed.
+  # string that is valid base64 of valid JSON (for example the literal string
+  # "MzA=" sent to /decrypt) is indistinguishable from a ciphertext and will
+  # be decoded. The encrypt-then-decrypt round trip below is still exact for
+  # such strings, since /encrypt re-encodes them before /decrypt ever looks,
+  # so the property holds universally; only a decrypt-is-identity-on-plaintext
+  # property would not, and none is claimed.
 
   defp json_string, do: one_of([string(:printable), string(:utf8)])
 

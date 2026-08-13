@@ -41,24 +41,28 @@ defmodule RiotTakeHome.ConfigurationTest do
       body = ~s({"age":30,"name":"John Doe"})
       encrypted = post_json("/encrypt", body) |> json_body()
 
-      assert String.starts_with?(encrypted["age"], "enc:aesgcm:")
-      refute String.starts_with?(encrypted["age"], "enc:b64:")
+      # Nothing marks the algorithm on the wire, but the wire layout betrays
+      # it: an AES value decodes to nonce(12) || tag(16) || ciphertext, where
+      # plain base64 of "30" would decode to 2 bytes.
+      assert byte_size(Base.decode64!(encrypted["age"])) == 12 + 16 + 2
 
       decrypted = post_json("/decrypt", JSON.encode!(encrypted)) |> json_body()
       assert decrypted == JSON.decode!(body)
       assert decrypted["age"] === 30
     end
 
-    test "values written by the previous cipher still decrypt after the swap" do
-      # The id travels inside the marker, so a body written before the swap is
-      # still readable after it. This is what the marker format buys, and it is
-      # the reason no migration step exists.
+    test "values written by the previous cipher stop decrypting after the swap" do
+      # No algorithm id travels with a value, so /decrypt can only ask the
+      # active cipher. After the swap the base64 value is handed to AES-GCM,
+      # whose tag verification rejects it as not its own, and it passes
+      # through unchanged: swapping the cipher is a clean cut, not a
+      # migration, and reading old values back would need one.
       legacy = post_json("/encrypt", ~s({"age":30})) |> json_body()
-      assert legacy["age"] == "enc:b64:MzA"
+      assert legacy == %{"age" => "MzA="}
 
       swap(:cipher, RiotTakeHome.Cipher.AesGcm)
 
-      assert post_json("/decrypt", JSON.encode!(legacy)) |> json_body() == %{"age" => 30}
+      assert post_json("/decrypt", JSON.encode!(legacy)) |> json_body() == legacy
     end
   end
 
@@ -71,7 +75,7 @@ defmodule RiotTakeHome.ConfigurationTest do
       sha512 = post_json("/sign", data) |> json_body() |> Map.fetch!("signature")
 
       refute sha512 == sha256
-      assert byte_size(Base.url_decode64!(sha512, padding: false)) == 64
+      assert byte_size(Base.decode16!(sha512, case: :lower)) == 64
 
       assert post_json("/verify", ~s({"signature":"#{sha512}","data":#{data}})).status == 204
       # the signature written by the other signer is no longer accepted
@@ -87,24 +91,26 @@ defmodule RiotTakeHome.ConfigurationTest do
 
       # 28+ decoded bytes, so the value survives the nonce/tag split and reaches
       # the key lookup, which is where the failure used to be raised.
-      %{marker: "enc:aesgcm:" <> Base.url_encode64(:binary.copy("A", 40), padding: false)}
+      %{blob: Base.encode64(:binary.copy("A", 40))}
     end
 
-    test "decrypt_payload/1 leaves an aesgcm marker alone when no key is configured", %{
-      marker: marker
+    test "decrypt_payload/1 leaves an AES-shaped value alone when no key is configured", %{
+      blob: blob
     } do
-      payload = %{"x" => marker}
+      swap(:cipher, RiotTakeHome.Cipher.AesGcm)
+      payload = %{"x" => blob}
 
       assert Payload.decrypt_payload(payload) == payload
     end
 
-    test "POST /decrypt answers 200, not 500, when a marker names a cipher it cannot key", %{
-      marker: marker
+    test "POST /decrypt answers 200, not 500, when the active cipher cannot be keyed", %{
+      blob: blob
     } do
-      conn = post_json("/decrypt", JSON.encode!(%{"x" => marker}))
+      swap(:cipher, RiotTakeHome.Cipher.AesGcm)
+      conn = post_json("/decrypt", JSON.encode!(%{"x" => blob}))
 
       assert conn.status == 200
-      assert json_body(conn) == %{"x" => marker}
+      assert json_body(conn) == %{"x" => blob}
     end
   end
 end

@@ -11,92 +11,75 @@ defmodule RiotTakeHome.PayloadTest do
     "contact" => %{"email" => "john@example.com", "phone" => "123-456-7890"}
   }
 
-  # The false-positive table.
-  # None of these strings is encrypted, so /decrypt must return every one of
-  # them strictly unchanged. Each one is a counter-example to the naive
-  # detection rule, "if it decodes as base64, it was encrypted":
-  @false_positives [
-    # decodes as base64 into valid UTF-8 bytes: the naive heuristic
-    # destroys the company's own name.
+  # The false-positive table, first half: strings that are NOT transformed.
+  # Detection replaces a string only when all four conditions hold — strict
+  # standard base64, valid UTF-8, the integer bound, valid JSON — and each of
+  # these fails at least one of them, so /decrypt returns every one strictly
+  # unchanged. Verified with python (base64.b64decode, bytes.decode,
+  # json.loads), never with the code under test:
+  @unchanged [
+    # decodes (to "F*-"), valid UTF-8, but not valid JSON
     "Riot",
-    # decodes to "30", which is valid JSON: the double heuristic
-    # (base64 then JSON) silently turns this string into the number 30.
-    "MzA=",
-    # decodes to "Hello": valid UTF-8 again, corrupted by the heuristic.
-    "SGVsbG8=",
-    # 4 characters, valid base64 alphabet, decodes without error.
+    # decodes, but to <<0xB5, 0xEB, 0x2D>>, which is not valid UTF-8
     "test",
-    # same: any 4-letter [a-z] word is valid base64.
+    # same: any 4-letter [a-z] word is valid base64, few decode to UTF-8
     "abcd",
-    # the assignment's own plaintext example. Safe from the heuristic only
-    # by accident: the dashes are outside the standard base64 alphabet.
+    # the dashes sit outside the standard alphabet: not base64 at all
     "1998-11-19",
-    # the assignment's other plaintext example, safe only thanks to the
-    # space. "John" alone would have been corrupted.
+    # the space: not base64 either. "John" alone would still fail on JSON.
     "John Doe",
-    # a real GitHub node_id: decodes to "012:Organization61430766".
-    # Real-world identifiers are frequently valid base64.
-    "MDEyOk9yZ2FuaXphdGlvbjYxNDMwNzY2"
+    # a real GitHub node_id: decodes to "012:Organization61430766",
+    # valid UTF-8 but not valid JSON
+    "MDEyOk9yZ2FuaXphdGlvbjYxNDMwNzY2",
+    # decodes to "John Doe": a bare string is not a JSON document
+    "Sm9obiBEb2U=",
+    # decodes to "Hello": same
+    "SGVsbG8=",
+    # decodes to <<0xFF, 0xFE>>: invalid UTF-8
+    "//4=",
+    # missing padding: the strict decode rejects it outright
+    "MzA"
   ]
 
-  # All expected markers in this file were computed by hand (python:
-  # urlsafe base64 of the JSON encoding, padding stripped), never with the
+  # All expected ciphertexts in this file were computed with python
+  # (base64.b64encode over the JSON encoding of the value), never with the
   # code under test.
   describe "encrypt_payload/1" do
-    test "the assignment example encrypts to the documented markers" do
+    test "the assignment example encrypts to the documented values" do
       assert Payload.encrypt_payload(@example) == %{
-               "age" => "enc:b64:MzA",
-               "name" => "enc:b64:IkpvaG4gRG9lIg",
-               "contact" =>
-                 "enc:b64:eyJlbWFpbCI6ImpvaG5AZXhhbXBsZS5jb20iLCJwaG9uZSI6IjEyMy00NTYtNzg5MCJ9"
+               "age" => "MzA=",
+               "name" => "IkpvaG4gRG9lIg==",
+               "contact" => "eyJlbWFpbCI6ImpvaG5AZXhhbXBsZS5jb20iLCJwaG9uZSI6IjEyMy00NTYtNzg5MCJ9"
              }
     end
   end
 
   describe "decrypt_payload/1" do
-    test "unencrypted strings pass through strictly unchanged" do
-      payload =
-        Map.new(Enum.with_index(@false_positives), fn {value, i} -> {"key_#{i}", value} end)
+    test "strings failing any detection condition pass through strictly unchanged" do
+      payload = Map.new(Enum.with_index(@unchanged), fn {value, i} -> {"key_#{i}", value} end)
 
       assert Payload.decrypt_payload(payload) == payload
     end
 
-    test "a marker nested at depth 2 comes back unchanged" do
-      original = %{"outer" => %{"inner" => "enc:b64:MzA"}}
+    test "the accepted false positives: base64 of valid JSON is transformed" do
+      # The second half of the table. These plaintext strings satisfy all four
+      # conditions, so the heuristic cannot tell them from ciphertexts and
+      # transforms them. This is the documented cost of detecting bare base64;
+      # pinned here so the trade-off stays visible instead of implicit.
+      assert Payload.decrypt_payload(%{"a" => "MzA=", "b" => "e30=", "c" => "dHJ1ZQ=="}) ==
+               %{"a" => 30, "b" => %{}, "c" => true}
+    end
+
+    test "a ciphertext nested at depth 2 comes back unchanged" do
+      original = %{"outer" => %{"inner" => "MzA="}}
 
       # Both operations act at depth 1 only: on decrypt the value of "outer"
-      # is an object, not a marked string, so the nested marker is untouched.
+      # is an object, not a string, so the nested value is never inspected.
       assert Payload.decrypt_payload(original) == original
 
-      # Through a full round trip the nested marker also survives verbatim
+      # Through a full round trip the nested string also survives verbatim
       # (it is encrypted as part of the depth-1 object, then restored).
       assert original |> Payload.encrypt_payload() |> Payload.decrypt_payload() == original
-    end
-
-    test "malformed or unknown markers come back strictly unchanged" do
-      payload = %{
-        # well-formed marker, but "aes" is not a registered algorithm id
-        "unknown_alg" => "enc:aes:xxxx",
-        # known id, invalid base64 payload
-        "broken_b64" => "enc:b64:!!!",
-        # prefix with no id and no data
-        "bare_prefix" => "enc:",
-        # known id, empty data: decodes to "" which is not valid JSON
-        "empty_data" => "enc:b64:",
-        # known id, but padded input: encoding is unpadded, decoding is strict
-        "padded_b64" => "enc:b64:MzA="
-      }
-
-      assert Payload.decrypt_payload(payload) == payload
-    end
-
-    test "b64 and aesgcm markers coexist in one body without migration" do
-      # The marker is built by hand here on purpose: this pins the wire format
-      # "enc:<alg_id>:<data>", not just the round trip.
-      aes_value = "enc:aesgcm:" <> AesGcm.encrypt(JSON.encode!(%{"n" => 1}))
-      payload = %{"a" => aes_value, "b" => "enc:b64:MzA"}
-
-      assert Payload.decrypt_payload(payload) == %{"a" => %{"n" => 1}, "b" => 30}
     end
   end
 
@@ -115,9 +98,9 @@ defmodule RiotTakeHome.PayloadTest do
     test ~s(the string "30" and the number 30 stay distinct) do
       encrypted = Payload.encrypt_payload(%{"s" => "30", "n" => 30})
 
-      # Distinct plaintexts ("\"30\"" vs "30") give distinct markers.
-      assert encrypted["s"] == "enc:b64:IjMwIg"
-      assert encrypted["n"] == "enc:b64:MzA"
+      # Distinct plaintexts ("\"30\"" vs "30") give distinct ciphertexts.
+      assert encrypted["s"] == "IjMwIg=="
+      assert encrypted["n"] == "MzA="
 
       decrypted = Payload.decrypt_payload(encrypted)
       assert decrypted["s"] === "30"
@@ -138,12 +121,12 @@ defmodule RiotTakeHome.PayloadTest do
 
       encrypted = Payload.encrypt_payload(original)
 
-      # Spot-check hand-computed markers so the encryption side is anchored to
-      # real values, not merely consistent with itself.
-      assert encrypted["true"] == "enc:b64:dHJ1ZQ"
-      assert encrypted["null"] == "enc:b64:bnVsbA"
-      assert encrypted["empty_string"] == "enc:b64:IiI"
-      assert encrypted["empty_object"] == "enc:b64:e30"
+      # Spot-check hand-computed ciphertexts so the encryption side is
+      # anchored to real values, not merely consistent with itself.
+      assert encrypted["true"] == "dHJ1ZQ=="
+      assert encrypted["null"] == "bnVsbA=="
+      assert encrypted["empty_string"] == "IiI="
+      assert encrypted["empty_object"] == "e30="
 
       decrypted = Payload.decrypt_payload(encrypted)
       assert decrypted == original

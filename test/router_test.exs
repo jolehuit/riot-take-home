@@ -23,18 +23,17 @@ defmodule RiotTakeHome.RouterTest do
   @example ~s({"name":"John Doe","age":30,"contact":{"email":"john@example.com","phone":"123-456-7890"}})
 
   describe "POST /encrypt" do
-    test "200 with a marker per depth-1 property" do
+    test "200 with a base64 ciphertext per depth-1 property" do
       conn = post_json("/encrypt", @example)
 
       assert conn.status == 200
       assert get_resp_header(conn, "content-type") == ["application/json; charset=utf-8"]
 
-      # Hand-computed expected markers (python base64), see payload_test.exs.
+      # Hand-computed expected values (python base64), see payload_test.exs.
       assert json_body(conn) == %{
-               "age" => "enc:b64:MzA",
-               "name" => "enc:b64:IkpvaG4gRG9lIg",
-               "contact" =>
-                 "enc:b64:eyJlbWFpbCI6ImpvaG5AZXhhbXBsZS5jb20iLCJwaG9uZSI6IjEyMy00NTYtNzg5MCJ9"
+               "age" => "MzA=",
+               "name" => "IkpvaG4gRG9lIg==",
+               "contact" => "eyJlbWFpbCI6ImpvaG5AZXhhbXBsZS5jb20iLCJwaG9uZSI6IjEyMy00NTYtNzg5MCJ9"
              }
     end
 
@@ -42,8 +41,8 @@ defmodule RiotTakeHome.RouterTest do
       conn = post_json("/encrypt", ~s({"_json":1}))
 
       assert conn.status == 200
-      # base64url of "1" is "MQ"
-      assert json_body(conn) == %{"_json" => "enc:b64:MQ"}
+      # standard base64 of "1" is "MQ=="
+      assert json_body(conn) == %{"_json" => "MQ=="}
     end
   end
 
@@ -67,15 +66,33 @@ defmodule RiotTakeHome.RouterTest do
       assert decrypted["age"] === 30
     end
 
-    test "the false-positive table passes through HTTP unchanged" do
+    test "the unchanged half of the false-positive table passes through HTTP intact" do
       body =
-        ~s({"a":"Riot","b":"MzA=","c":"SGVsbG8=","d":"test","e":"abcd",) <>
-          ~s("f":"1998-11-19","g":"John Doe","h":"MDEyOk9yZ2FuaXphdGlvbjYxNDMwNzY2"})
+        ~s({"a":"Riot","b":"Sm9obiBEb2U=","c":"SGVsbG8=","d":"test","e":"abcd",) <>
+          ~s("f":"1998-11-19","g":"John Doe","h":"MDEyOk9yZ2FuaXphdGlvbjYxNDMwNzY2","i":"//4="})
 
       conn = post_json("/decrypt", body)
 
       assert conn.status == 200
       assert json_body(conn) == JSON.decode!(body)
+    end
+
+    test "base64 of a huge integer passes through unchanged, and fast" do
+      # The request-side bound sees this value as a string; the huge plaintext
+      # only appears after decryption, and it is valid JSON, so the decrypt-
+      # side bound is the only thing standing between it and the response
+      # encoder, where re-encoding costs quadratic CPU (~11 s at 700_000
+      # digits unbounded). The value must come back exactly as it arrived.
+      for digits <- [100_000, 700_000] do
+        value = Base.encode64(String.duplicate("9", digits))
+        body = JSON.encode!(%{"n" => value})
+
+        {micros, conn} = :timer.tc(fn -> post_json("/decrypt", body) end)
+
+        assert conn.status == 200
+        assert json_body(conn) == %{"n" => value}
+        assert micros < 2_000_000, "#{digits} digits took #{div(micros, 1000)} ms"
+      end
     end
   end
 
@@ -90,7 +107,9 @@ defmodule RiotTakeHome.RouterTest do
       assert Map.keys(body) == ["signature"]
 
       # independently computed value, see signature_test.exs
-      assert body == %{"signature" => "yO5LzRq16-mJqoLkIzD2zLF995Qj7Exkujn8vClrNvc"}
+      assert body == %{
+               "signature" => "c8ee4bcd1ab5ebe989aa82e42330f6ccb17df79423ec4c64ba39fcbc296b36f7"
+             }
     end
 
     test "key order does not change the signature" do
@@ -111,6 +130,15 @@ defmodule RiotTakeHome.RouterTest do
 
       assert conn.status == 204
       assert conn.resp_body == ""
+    end
+
+    test "204 with an extra top-level field: verification covers data only" do
+      data = ~s({"message":"Hello World","timestamp":1616161616})
+      signature = signature_for(data)
+
+      body = ~s({"signature":"#{signature}","data":#{data},"note":"ignored"})
+
+      assert post_json("/verify", body).status == 204
     end
 
     test "204 when the data keys are permuted (symmetry with /sign)" do
@@ -218,23 +246,6 @@ defmodule RiotTakeHome.RouterTest do
 
       assert conn.status == 200
       assert micros < 2_000_000, "took #{div(micros, 1000)} ms, the digit bound is not holding"
-    end
-
-    test "a bounded body cannot smuggle an unbounded integer through /decrypt" do
-      # The request-side bound inspects the parsed body, where this value is a
-      # string; the 700_000-digit plaintext only appears after decryption.
-      # Without the decrypt-side bound, re-encoding that integer into the
-      # response costs ~11 s of CPU inside the documented body limit. With it,
-      # the value is left as it arrived, like anything undecryptable.
-      digits = String.duplicate("9", 700_000)
-      value = "enc:b64:" <> Base.url_encode64(digits, padding: false)
-      body = JSON.encode!(%{"n" => value})
-
-      {micros, conn} = :timer.tc(fn -> post_json("/decrypt", body) end)
-
-      assert conn.status == 200
-      assert json_body(conn) == %{"n" => value}
-      assert micros < 2_000_000, "took #{div(micros, 1000)} ms, the decrypt path is unbounded"
     end
 
     test "413 on a body above the explicit 1 MiB limit" do

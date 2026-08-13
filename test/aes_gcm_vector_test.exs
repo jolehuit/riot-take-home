@@ -10,13 +10,14 @@ defmodule RiotTakeHome.Cipher.AesGcmVectorTest do
   #   key   = Buffer.from("AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=", "base64")
   #   nonce = Buffer.from("000102030405060708090a0b", "hex")
   #   c     = crypto.createCipheriv("aes-256-gcm", key, nonce)
-  #   wire  = nonce || tag || ciphertext        (base64url, unpadded)
+  #   ct    = Buffer.concat([c.update('{"n":1}'), c.final()])
+  #   wire  = Buffer.concat([nonce, c.getAuthTag(), ct]).toString("base64")
   #
   # The point is that nothing here can be satisfied by the code agreeing with
-  # itself. A change to the nonce size, the wire layout, or the variable the
-  # key is read from all make this vector stop decrypting.
+  # itself. A change to the nonce size, the wire layout, the base64 alphabet,
+  # or the variable the key is read from all make this vector stop decrypting.
   @plaintext ~s({"n":1})
-  @wire "AAECAwQFBgcICQoLnC7-pk5gtDf6uERqsDtuOzwguDn_1L8"
+  @wire "AAECAwQFBgcICQoLnC7+pk5gtDf6uERqsDtuOzwguDn/1L8="
 
   describe "decrypt/1" do
     test "decrypts a ciphertext produced entirely outside this codebase" do
@@ -25,10 +26,9 @@ defmodule RiotTakeHome.Cipher.AesGcmVectorTest do
 
     test "rejects the same vector with a flipped tag byte" do
       # byte 20 of the decoded wire sits inside the 16-byte tag
-      <<head::binary-size(20), byte, rest::binary>> = Base.url_decode64!(@wire, padding: false)
+      <<head::binary-size(20), byte, rest::binary>> = Base.decode64!(@wire)
 
-      tampered =
-        Base.url_encode64(<<head::binary, Bitwise.bxor(byte, 1), rest::binary>>, padding: false)
+      tampered = Base.encode64(<<head::binary, Bitwise.bxor(byte, 1), rest::binary>>)
 
       assert AesGcm.decrypt(tampered) == :error
     end
@@ -38,7 +38,7 @@ defmodule RiotTakeHome.Cipher.AesGcmVectorTest do
     test "lays the wire out as nonce || tag || ciphertext, with a 12-byte nonce" do
       # GCM ciphertext is the same length as the plaintext, so the total pins
       # the nonce and tag sizes: shrink either one and this fails.
-      decoded = @plaintext |> AesGcm.encrypt() |> Base.url_decode64!(padding: false)
+      decoded = @plaintext |> AesGcm.encrypt() |> Base.decode64!()
 
       assert byte_size(decoded) == 12 + 16 + byte_size(@plaintext)
     end

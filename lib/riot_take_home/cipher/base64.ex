@@ -1,23 +1,20 @@
 defmodule RiotTakeHome.Cipher.Base64 do
   @moduledoc """
-  Url-safe base64 codec, no padding, strict decoding.
+  Standard base64 with padding, the algorithm the assignment names.
 
-  Encoding rather than encryption; the marker makes that an explicit,
-  swappable choice instead of a hidden one.
+  Encoding rather than encryption, so `decrypt/1` is the strict decode:
+  `Base.decode64/1` rejects any character outside the standard alphabet and
+  any missing or misplaced padding, and that rejection is this algorithm's
+  whole detection step. Whether the decoded bytes are a plausible plaintext
+  (valid UTF-8, valid JSON, bounded integers) is the caller's judgment, not
+  the codec's.
   """
 
   @behaviour RiotTakeHome.Cipher
 
   @impl true
-  def id, do: "b64"
+  def encrypt(plaintext), do: Base.encode64(plaintext)
 
   @impl true
-  def encrypt(plaintext), do: Base.url_encode64(plaintext, padding: false)
-
-  @impl true
-  def decrypt(data) do
-    # `padding: false` alone tolerates padded input; "=" never occurs in the
-    # unpadded url-safe alphabet, so its presence is rejected outright.
-    if String.contains?(data, "="), do: :error, else: Base.url_decode64(data, padding: false)
-  end
+  def decrypt(data), do: Base.decode64(data)
 end

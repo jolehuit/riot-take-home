@@ -4,7 +4,7 @@ defmodule RiotTakeHome.Signer.Hmac do
 
   The scheme differs only by hash function, so the signing and the
   constant-time verification live here once and each scheme module supplies its
-  `:sha256` / `:sha512` atom. Signatures are url-safe base64 without padding.
+  `:sha256` / `:sha512` atom. Signatures are lowercase hex.
   """
 
   @doc "Signs `message` with `algo` (a `:crypto` hash) and `key`."
@@ -12,7 +12,7 @@ defmodule RiotTakeHome.Signer.Hmac do
   def sign(algo, message, key) do
     :hmac
     |> :crypto.mac(algo, key, message)
-    |> Base.url_encode64(padding: false)
+    |> Base.encode16(case: :lower)
   end
 
   @doc """

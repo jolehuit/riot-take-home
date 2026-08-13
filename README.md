@@ -4,9 +4,9 @@
 ![Elixir](https://img.shields.io/badge/Elixir-1.19.5-4B275F?style=flat-square&logo=elixir&logoColor=white)
 ![OTP](https://img.shields.io/badge/OTP-28-A2003B?style=flat-square)
 ![Server](https://img.shields.io/badge/server-Bandit-0B7261?style=flat-square)
-![Tests](https://img.shields.io/badge/tests-59%20passing-3FB950?style=flat-square)
+![Tests](https://img.shields.io/badge/tests-60%20passing-3FB950?style=flat-square)
 
-A small HTTP API with four POST endpoints over JSON: `/encrypt`, `/decrypt`, `/sign`, `/verify`. Elixir with Plug and Bandit, no framework, no database, two runtime dependencies, 453 lines in `lib/`, 346 of them code.
+A small HTTP API with four POST endpoints over JSON: `/encrypt`, `/decrypt`, `/sign`, `/verify`. Elixir with Plug and Bandit, no framework, no database, two runtime dependencies, 455 lines in `lib/`, 356 of them code.
 
 ## Run it
 
@@ -26,20 +26,20 @@ The server refuses to start without `SIGNING_SECRET`. The port defaults to 4000 
 ```sh
 curl -X POST localhost:4000/encrypt -H "content-type: application/json" \
   -d '{"name":"John Doe","age":30,"contact":{"email":"john@example.com","phone":"123-456-7890"}}'
-# {"age":"enc:b64:MzA","contact":"enc:b64:eyJlbWFpbCI6ImpvaG5AZXhhbXBsZS5jb20iLCJwaG9uZSI6IjEyMy00NTYtNzg5MCJ9","name":"enc:b64:IkpvaG4gRG9lIg"}
+# {"age":"MzA=","contact":"eyJlbWFpbCI6ImpvaG5AZXhhbXBsZS5jb20iLCJwaG9uZSI6IjEyMy00NTYtNzg5MCJ9","name":"IkpvaG4gRG9lIg=="}
 
 curl -X POST localhost:4000/decrypt -H "content-type: application/json" \
-  -d '{"name":"enc:b64:IkpvaG4gRG9lIg","age":"enc:b64:MzA","birth_date":"1998-11-19"}'
+  -d '{"name":"IkpvaG4gRG9lIg==","age":"MzA=","birth_date":"1998-11-19"}'
 # {"age":30,"birth_date":"1998-11-19","name":"John Doe"}
 # age is the number 30 again; the plaintext birth_date passed through untouched.
 
 curl -X POST localhost:4000/sign -H "content-type: application/json" \
   -d '{"message":"Hello World","timestamp":1616161616}'
-# {"signature":"Wn2CIuB4zTZELZHOMIL7wyXa0L2LrQDCGRy7loWdGhU"}
+# {"signature":"5a7d8222e078cd36442d91ce3082fbc325dad0bd8bad00c2191cbb96859d1a15"}
 # The same payload with the keys reversed returns the same signature.
 
 curl -i -X POST localhost:4000/verify -H "content-type: application/json" \
-  -d '{"signature":"Wn2CIuB4zTZELZHOMIL7wyXa0L2LrQDCGRy7loWdGhU","data":{"timestamp":1616161616,"message":"Hello World"}}'
+  -d '{"signature":"5a7d8222e078cd36442d91ce3082fbc325dad0bd8bad00c2191cbb96859d1a15","data":{"timestamp":1616161616,"message":"Hello World"}}'
 # HTTP/1.1 204 No Content   (permuted keys in data; tamper with data and you get 400)
 ```
 
@@ -47,14 +47,14 @@ curl -i -X POST localhost:4000/verify -H "content-type: application/json" \
 
 | Endpoint | Body | Success |
 |---|---|---|
-| `POST /encrypt` | a JSON object | 200, every depth-1 value encrypted and wrapped in a marker (a nested object becomes one string) |
-| `POST /decrypt` | a JSON object | 200, exact inverse at depth 1; values that are not markers come back unchanged, with their original type |
-| `POST /sign` | a JSON object | 200, exactly `{"signature": "<sig>"}`; HMAC-SHA256 over the canonical form, url-safe base64, no padding |
-| `POST /verify` | `{"signature": <string>, "data": <object>}` | 204 empty body if valid, 400 otherwise |
+| `POST /encrypt` | a JSON object | 200, every depth-1 value JSON-encoded then base64-encoded (a nested object becomes one string) |
+| `POST /decrypt` | a JSON object | 200, exact inverse at depth 1; values not detected as ciphertext come back byte for byte unchanged |
+| `POST /sign` | a JSON object | 200, exactly `{"signature": "<sig>"}`; HMAC-SHA256 over the canonical form, lowercase hex |
+| `POST /verify` | `{"signature": <string>, "data": <object>}` | 204 empty body if valid, 400 otherwise; extra top-level fields are ignored, verification covers `data` only |
 
-**Marker:** `enc:<alg_id>:<data>`, e.g. `enc:b64:MzA`. What follows the second colon is the base64 the assignment names; the prefix is metadata around it, not a different algorithm. Carrying the id with the value is what makes `/decrypt` detection an exact check rather than a guess at the bytes, and what lets two ids (`b64`, `aesgcm`) coexist in one body with no migration. Both are argued under Design decisions.
+**Detection:** a depth-1 string is replaced by its decoded value exactly when two conditions hold: it is valid standard base64 (strict alphabet and padding), and the decoded bytes are valid UTF-8 that parses as JSON within the integer bound. Any condition failing returns the value unchanged. The false positives this rule admits, and their cost, are argued under Design decisions.
 
-**Status codes:** 200 / 204 as above; 400 on malformed JSON, an empty body, a non-object root, an integer past 1000 digits, or a bad `/verify` shape; 413 over 1 MiB; 415 on a non-JSON content-type; 405 with an `Allow` header on a known route with another method; 404 on an unknown route. Errors are `{"error": "<message>"}`. No 500 is reachable from any input, including a marker naming a cipher the server cannot key: decryption of untrusted data never raises, it reports failure and the value passes through. Parser errors are caught without a request body ever reaching the logs.
+**Status codes:** 200 / 204 as above; 400 on malformed JSON, an empty body, a non-object root, an integer past 1000 digits, or a bad `/verify` shape; 413 over 1 MiB; 415 on a non-JSON content-type; 405 with an `Allow` header on a known route with another method; 404 on an unknown route. Errors are `{"error": "<message>"}`. No 500 is reachable from any input: decryption of untrusted data never raises, it reports failure and the value passes through, including when the active cipher has no key to try. Parser errors are caught without a request body ever reaching the logs.
 
 ## Design decisions
 
@@ -62,11 +62,11 @@ The four endpoints over one base64 cipher and one HMAC signer are the whole of t
 
 ### `/encrypt` and `/decrypt`
 
-**Ciphertext carries a marker.** `/decrypt` is asked to detect encrypted strings and to leave unencrypted values unchanged, and base64 has no mark of its own, so no rule reading the bytes can do both: `"MzA="` decodes to `"30"`, which is valid JSON, and a decode-then-parse rule turns that plaintext into the number 30. Every value this service encrypts therefore carries `enc:<alg_id>:`, detection is an exact check, and no plaintext can be mistaken for it. The cost, assumed: a bare base64 string built elsewhere is left unchanged rather than guessed at. `payload_test.exs` holds the table of strings a heuristic corrupts.
+**Detection reads the bytes, and its false positives are named.** The assignment names base64 as the algorithm and asks `/decrypt` to detect encrypted strings; base64 has no mark of its own, so detection is the two-condition rule above, and it cannot be exact. A value is returned unchanged unless it is valid standard base64 of valid JSON, which sorts every string into one of two classes. Most plaintext fails a condition and passes through: `"Riot"` and `"Sm9obiBEb2U="` decode but not to JSON, `"test"` decodes to invalid UTF-8, `"1998-11-19"` and `"John Doe"` are not base64 at all. But a plaintext that satisfies both conditions is indistinguishable from a ciphertext and is transformed: `"MzA="` becomes the number `30`, `"e30="` becomes `{}`, `"dHJ1ZQ=="` becomes `true`. That is the accepted cost of detecting bare base64, and it is pinned by tests rather than left implicit: `payload_test.exs` holds both halves of the table, the strings that must survive and the strings the rule claims.
 
-**The value is JSON-encoded before it is encrypted.** `/encrypt` encrypts `JSON.encode!(value)`, so `30` and `"30"` produce different markers and each returns with its original type. Coercing to strings would break the round trip.
+**The value is JSON-encoded before it is encrypted.** `/encrypt` encrypts `JSON.encode!(value)`, so `30` and `"30"` produce different ciphertexts and each returns with its original type. Coercing to strings would break the round trip, and requiring valid JSON inside the base64 is also what keeps the detection's false-positive class as small as it is.
 
-**Depth 1 on both sides.** A nested object becomes one string on encrypt, so `/decrypt` inspects depth 1 only and is the exact inverse: a marker-shaped string sitting deeper is user data and stays untouched. Recursive decryption could only corrupt plaintext, since `/encrypt` never produces a nested marker.
+**Depth 1 on both sides.** A nested object becomes one string on encrypt, so `/decrypt` inspects depth 1 only and is the exact inverse: a base64-shaped string sitting deeper is user data and stays untouched. Recursive decryption could only corrupt plaintext, since `/encrypt` never produces a nested ciphertext.
 
 ### `/sign` and `/verify`
 
@@ -80,9 +80,9 @@ Exactness needs a bound, and the body limit is not one: converting a bignum back
 
 ### Swapping the algorithm
 
-**Each behaviour has two implementations,** because a declared behaviour proves nothing where a second one proves it. `Cipher` has base64 and AES-256-GCM, `Signer` has HMAC-SHA256 and HMAC-SHA512. Each swap is one config line and nothing else moves, tested by flipping the config and driving the endpoints (`configuration_test.exs`). Base64 is the default, so every example above reproduces byte for byte.
+**Each behaviour has two implementations,** because a declared behaviour proves nothing where a second one proves it. `Cipher` has base64 and AES-256-GCM, `Signer` has HMAC-SHA256 and HMAC-SHA512. Each swap is one config line and nothing else moves, tested by flipping the config and driving the endpoints (`configuration_test.exs`). Base64 is the default, so every example above reproduces byte for byte. Each cipher also owns its detection behind the same callback: base64 lets the strict decode decide, AES-GCM lets the authentication tag decide, so a string its key never sealed fails verification and reads as "not mine". One consequence is stated rather than hidden: no algorithm id travels with a value, so after a swap the values written by the previous cipher stop decrypting and pass through unchanged; a swap is a clean cut, and reading old values back would need a migration.
 
-**The AES key is 32 raw bytes, checked at boot.** `ENCRYPTION_KEY` must be exactly 32 bytes, base64-encoded (`openssl rand -base64 32`); a malformed value refuses the boot with the same kind of message as a missing `SIGNING_SECRET`, and since base64 is the default cipher, absence is a normal start. The cipher is deliberately minimal: keyed and non-deterministic, the two properties that break any detection reading the bytes, and real deployment key management, derivation from passphrases and rotation included, is out of scope. The key stays separate from `SIGNING_SECRET`, since a value used to encrypt must not be the value used to sign (`aes_gcm_vector_test.exs`).
+**The AES key is 32 raw bytes, checked at boot.** `ENCRYPTION_KEY` must be exactly 32 bytes, base64-encoded (`openssl rand -base64 32`); a malformed value refuses the boot with the same kind of message as a missing `SIGNING_SECRET`, and since base64 is the default cipher, absence is a normal start. The cipher is deliberately minimal: keyed, non-deterministic and authenticated, and real deployment key management, derivation from passphrases and rotation included, is out of scope. The key stays separate from `SIGNING_SECRET`, since a value used to encrypt must not be the value used to sign (`aes_gcm_vector_test.exs`).
 
 ### Framework and request shape
 
@@ -96,7 +96,7 @@ Exactness needs a bound, and the body limit is not one: converting a bignum back
 mix test
 ```
 
-59 tests, 4 of them properties: over generated JSON, encrypt-then-decrypt is the identity and sign-then-verify always passes (`property_test.exs`). Every expected value (markers, signatures, canonical forms, one AES-GCM ciphertext) was computed outside the code under test, so a test cannot inherit a bug from it. Two are worth naming: a 40-key case, because Erlang sorts smaller maps for free and would otherwise make the explicit sort look correct by accident; and an AES-GCM vector generated under node, which pins the nonce size, the wire layout and the variable the key is read from, all at once.
+60 tests, 4 of them properties: over generated JSON, encrypt-then-decrypt is the identity and sign-then-verify always passes (`property_test.exs`). Every expected value (ciphertexts, signatures, canonical forms, one AES-GCM vector) was computed outside the code under test, with python or node, so a test cannot inherit a bug from it. Two are worth naming: a 40-key case, because Erlang sorts smaller maps for free and would otherwise make the explicit sort look correct by accident; and an AES-GCM vector generated under node, which pins the nonce size, the wire layout and the variable the key is read from, all at once.
 
 CI runs `mix format --check-formatted`, `mix compile --warnings-as-errors`, `mix credo --strict` and `mix test`, pinned to the versions in `.tool-versions`.
 
@@ -104,8 +104,9 @@ CI runs `mix format --check-formatted`, `mix compile --warnings-as-errors`, `mix
 
 | Left out | Why |
 |---|---|
+| Versioned ciphertext envelope | Production systems prefix ciphertexts with a version or algorithm id, which makes detection exact instead of heuristic and lets two algorithms coexist during a migration; recommended for anything past this assignment, which names bare base64. |
 | KMS, key derivation, rotation | The operator supplies 32 raw bytes and changing them is a restart; deriving keys from passphrases and accepting the old and the new at once belong to real deployment key management, and two environment variables are the honest scope here. |
 | Authentication, rate limiting | The assignment defines an anonymous API. |
 | GenServer, supervision beyond the HTTP server | The service holds no state. |
-| Telemetry, healthcheck, API versioning | Nothing here would consume them; the marker already carries the only thing that evolves. |
+| Telemetry, healthcheck, API versioning | Nothing here would consume them; four stateless routes have nothing to version. |
 | Database, docker-compose | Nothing is stored; one container is the whole system. |

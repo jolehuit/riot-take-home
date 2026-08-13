@@ -13,12 +13,17 @@ defmodule RiotTakeHome.SignatureTest do
 
       assert Signer.sign(a) == Signer.sign(b)
 
-      # Literal value computed independently (python hmac-sha256 over the
-      # canonical form {"message":"Hello World","timestamp":1616161616} with
-      # the test secret "test-only-secret", urlsafe base64, no padding). A
-      # wrong canonical form that is merely self-consistent cannot satisfy
+      # Literal value computed independently, never with the code under test:
+      #
+      #   python3 -c 'import hmac, hashlib
+      #   print(hmac.new(b"test-only-secret",
+      #       b"{\"message\":\"Hello World\",\"timestamp\":1616161616}",
+      #       hashlib.sha256).hexdigest())'
+      #
+      # A wrong canonical form that is merely self-consistent cannot satisfy
       # this assertion.
-      assert Signer.sign(a) == "yO5LzRq16-mJqoLkIzD2zLF995Qj7Exkujn8vClrNvc"
+      assert Signer.sign(a) ==
+               "c8ee4bcd1ab5ebe989aa82e42330f6ccb17df79423ec4c64ba39fcbc296b36f7"
     end
 
     test "large integers one apart sign differently" do
@@ -96,8 +101,9 @@ defmodule RiotTakeHome.SignatureTest do
       short = HmacSha256.sign(message, key)
       long = HmacSha512.sign(message, key)
 
-      assert byte_size(short) == 43
-      assert byte_size(long) == 86
+      # lowercase hex: two characters per digest byte
+      assert byte_size(short) == 64
+      assert byte_size(long) == 128
       # hash_equals/2 raises on differing sizes; the guard has to come first.
       refute HmacSha512.verify(message, key, short)
       refute HmacSha256.verify(message, key, long)

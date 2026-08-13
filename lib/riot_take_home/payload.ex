@@ -5,6 +5,15 @@ defmodule RiotTakeHome.Payload do
   Each value is JSON-encoded before encryption, so its original type
   (number, object, array, boolean, null) is restored on decryption and the
   string `"30"` stays distinct from the number `30`.
+
+  Detection on `/decrypt` is a heuristic, since nothing on the wire marks a
+  ciphertext: a depth-1 string is replaced by its decoded value only when the
+  active cipher accepts it (strict base64 for the default codec, the GCM tag
+  for AES) and the plaintext is valid UTF-8 that decodes as JSON within the
+  integer bound. Any condition failing returns the value byte for byte
+  unchanged. The false positives this admits, strings like `"MzA="` that are
+  valid base64 of valid JSON, are enumerated in the README and pinned in
+  `payload_test.exs`.
   """
 
   alias RiotTakeHome.Bound
@@ -14,23 +23,18 @@ defmodule RiotTakeHome.Payload do
   @spec encrypt_payload(map()) :: map()
   def encrypt_payload(payload) when is_map(payload) do
     cipher = Cipher.active()
-
-    Map.new(payload, fn {key, value} ->
-      {key, Cipher.wrap(cipher, cipher.encrypt(JSON.encode!(value)))}
-    end)
+    Map.new(payload, fn {key, value} -> {key, cipher.encrypt(JSON.encode!(value))} end)
   end
 
   @doc """
-  Decrypts every top-level value that carries a valid marker.
+  Decrypts every top-level value the active cipher recognises.
 
-  A value is decrypted only if it is a string, starts with `enc:`, names a
-  known cipher, and both decryption and JSON decoding succeed. Anything
-  else comes back strictly unchanged.
+  Anything else, non-strings included, comes back strictly unchanged.
   """
   @spec decrypt_payload(map()) :: map()
   def decrypt_payload(payload) when is_map(payload) do
-    ciphers = Cipher.known()
-    Map.new(payload, fn {key, value} -> {key, decrypt_value(value, ciphers)} end)
+    cipher = Cipher.active()
+    Map.new(payload, fn {key, value} -> {key, decrypt_value(cipher, value)} end)
   end
 
   # The bound check mirrors the router's: the request-side check only sees
@@ -39,10 +43,9 @@ defmodule RiotTakeHome.Payload do
   # it can reach the response encoder (where an unbounded integer costs
   # seconds of CPU). A value past the bound is left as it arrived, exactly
   # like any other value that cannot be decrypted.
-  defp decrypt_value(value, ciphers) when is_binary(value) do
-    with {:ok, id, data} <- Cipher.unwrap(value),
-         {:ok, cipher} <- Map.fetch(ciphers, id),
-         {:ok, plaintext} <- cipher.decrypt(data),
+  defp decrypt_value(cipher, value) when is_binary(value) do
+    with {:ok, plaintext} <- cipher.decrypt(value),
+         true <- String.valid?(plaintext),
          {:ok, term} <- JSON.decode(plaintext),
          true <- Bound.bounded?(term) do
       term
@@ -51,5 +54,5 @@ defmodule RiotTakeHome.Payload do
     end
   end
 
-  defp decrypt_value(value, _ciphers), do: value
+  defp decrypt_value(_cipher, value), do: value
 end

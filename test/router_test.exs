@@ -220,6 +220,23 @@ defmodule RiotTakeHome.RouterTest do
       assert micros < 2_000_000, "took #{div(micros, 1000)} ms, the digit bound is not holding"
     end
 
+    test "a bounded body cannot smuggle an unbounded integer through /decrypt" do
+      # The request-side bound inspects the parsed body, where this value is a
+      # string; the 700_000-digit plaintext only appears after decryption.
+      # Without the decrypt-side bound, re-encoding that integer into the
+      # response costs ~11 s of CPU inside the documented body limit. With it,
+      # the value is left as it arrived, like anything undecryptable.
+      digits = String.duplicate("9", 700_000)
+      value = "enc:b64:" <> Base.url_encode64(digits, padding: false)
+      body = JSON.encode!(%{"n" => value})
+
+      {micros, conn} = :timer.tc(fn -> post_json("/decrypt", body) end)
+
+      assert conn.status == 200
+      assert json_body(conn) == %{"n" => value}
+      assert micros < 2_000_000, "took #{div(micros, 1000)} ms, the decrypt path is unbounded"
+    end
+
     test "413 on a body above the explicit 1 MiB limit" do
       big = ~s({"big":") <> String.duplicate("a", 1_100_000) <> ~s("})
       conn = post_json("/encrypt", big)

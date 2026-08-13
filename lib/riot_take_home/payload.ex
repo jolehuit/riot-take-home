@@ -7,6 +7,7 @@ defmodule RiotTakeHome.Payload do
   string `"30"` stays distinct from the number `30`.
   """
 
+  alias RiotTakeHome.Bound
   alias RiotTakeHome.Cipher
 
   @doc "Encrypts every top-level value with the active cipher."
@@ -32,11 +33,18 @@ defmodule RiotTakeHome.Payload do
     Map.new(payload, fn {key, value} -> {key, decrypt_value(value, ciphers)} end)
   end
 
+  # The bound check mirrors the router's: the request-side check only sees
+  # integers that appear literally in the JSON, and a ciphertext hides its
+  # plaintext from it, so what comes out of decryption is bounded here before
+  # it can reach the response encoder (where an unbounded integer costs
+  # seconds of CPU). A value past the bound is left as it arrived, exactly
+  # like any other value that cannot be decrypted.
   defp decrypt_value(value, ciphers) when is_binary(value) do
     with {:ok, id, data} <- Cipher.unwrap(value),
          {:ok, cipher} <- Map.fetch(ciphers, id),
          {:ok, plaintext} <- cipher.decrypt(data),
-         {:ok, term} <- JSON.decode(plaintext) do
+         {:ok, term} <- JSON.decode(plaintext),
+         true <- Bound.bounded?(term) do
       term
     else
       _ -> value

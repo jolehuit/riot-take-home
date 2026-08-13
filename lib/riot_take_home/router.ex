@@ -15,19 +15,11 @@ defmodule RiotTakeHome.Router do
   use Plug.Router
   use Plug.ErrorHandler
 
+  alias RiotTakeHome.Bound
   alias RiotTakeHome.Payload
   alias RiotTakeHome.Signer
 
   @max_body_bytes 1_048_576
-
-  # The body limit bounds bytes, not CPU. Turning a bignum back into decimal is
-  # quadratic in its length, and every endpoint re-encodes what it was given, so
-  # one 1 MB integer literal costs ~24 s where 1 MB of text costs 1 ms. Bounding
-  # the digits bounds the whole worst case: cost grows as body size times this
-  # limit, which puts a full 1 MiB body under 50 ms. A 1000-digit integer is
-  # about 3300 bits, past any real value, so exact arithmetic is untouched.
-  @max_digits 1000
-  @max_integer Integer.pow(10, @max_digits)
 
   @parser_opts Plug.Parsers.init(
                  parsers: [:json],
@@ -103,18 +95,15 @@ defmodule RiotTakeHome.Router do
     end
   end
 
+  # The digit bound and its rationale live in `RiotTakeHome.Bound`; this is the
+  # request-side application, over integers that appear literally in the JSON.
   defp fetch_object(%Plug.Conn{body_params: %{"_json" => object}}) when is_map(object) do
-    if bounded?(object),
+    if Bound.bounded?(object),
       do: {:ok, object},
-      else: {:error, "an integer exceeds #{@max_digits} digits"}
+      else: {:error, "an integer exceeds #{Bound.max_digits()} digits"}
   end
 
   defp fetch_object(_conn), do: {:error, "request body must be a JSON object"}
-
-  defp bounded?(int) when is_integer(int), do: int < @max_integer and int > -@max_integer
-  defp bounded?(map) when is_map(map), do: Enum.all?(map, fn {_key, value} -> bounded?(value) end)
-  defp bounded?(list) when is_list(list), do: Enum.all?(list, &bounded?/1)
-  defp bounded?(_other), do: true
 
   defp method_not_allowed(conn) do
     conn

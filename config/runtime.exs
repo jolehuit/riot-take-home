@@ -40,7 +40,17 @@ if config_env() != :test do
       end
 
     :error ->
-      :ok
+      # Absent is a normal start under base64, but not under a cipher that
+      # needs a key: that combination would answer 500 on the first /encrypt,
+      # so it fails here instead, where the message can say what is missing.
+      if Application.compile_env(:riot_take_home, :cipher) == RiotTakeHome.Cipher.AesGcm do
+        raise """
+        the active cipher is AES-256-GCM, which needs ENCRYPTION_KEY.
+        Set it, or leave the default base64 cipher in config/config.exs:
+
+            ENCRYPTION_KEY=$(openssl rand -base64 32) mix run --no-halt
+        """
+      end
   end
 end
 
